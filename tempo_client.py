@@ -42,26 +42,31 @@ def _install_cli():
         f.write(data)
         tarball = f.name
 
+    extract_dir = os.path.dirname(TEMPO_BIN)
     try:
         with tarfile.open(tarball, "r:gz") as tar:
-            members = tar.getnames()
-            log.info("Archive contents: %s", members)
-            for member in tar.getmembers():
-                if os.path.basename(member.name) == "tempo" and not member.isdir():
-                    member.name = "tempo"
-                    tar.extract(member, path=os.path.dirname(TEMPO_BIN))
-                    break
+            names = tar.getnames()
+            log.info("Archive members: %s", names)
+            tar.extractall(path=extract_dir, filter="data")
+    except TypeError:
+        # filter= param not available on older Python
+        with tarfile.open(tarball, "r:gz") as tar:
+            tar.extractall(path=extract_dir)
     except Exception as exc:
-        log.error("Failed to extract Tempo binary: %s", exc)
+        log.error("Failed to extract archive: %s", exc)
         return
     finally:
         os.unlink(tarball)
 
+    # Log everything that landed in the bin dir
+    extracted = os.listdir(extract_dir)
+    log.info("Files in %s after extract: %s", extract_dir, extracted)
+
     if os.path.exists(TEMPO_BIN):
         os.chmod(TEMPO_BIN, 0o755)
-        log.info("Tempo CLI installed at %s", TEMPO_BIN)
+        log.info("Tempo CLI ready at %s", TEMPO_BIN)
     else:
-        log.error("Tempo binary not found in archive at expected path %s", TEMPO_BIN)
+        log.error("Tempo binary not at %s — files extracted: %s", TEMPO_BIN, extracted)
 
 
 def _restore_keys():

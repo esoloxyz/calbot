@@ -37,6 +37,8 @@ from tempo_client import TEMPO_TOOLS, TempoClient
 logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s", level=logging.INFO
 )
+# httpx logs full Telegram API URLs, which contain the bot token.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("assistant-bot")
 
 # ---------------------------------------------------------------------------

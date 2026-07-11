@@ -197,5 +197,6 @@ endpoint authorization, structured failures, and the spend ceiling.
 - Keep the bot in a private chat and configure `ALLOWED_CHAT_ID`.
 - Rotate the Telegram token if it appears in logs or screenshots.
 - Keep HTTP client logging at warning level; Telegram API URLs contain the token.
+- Keep mutable Telegram display names out of model-visible message content.
 - Use the smallest practical Tempo wallet balance and access-key allowance.
 - Review dynamic-price endpoints before raising `TEMPO_MAX_SPEND`.

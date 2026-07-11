@@ -32,6 +32,7 @@ from telegram.ext import (
 )
 
 from calendar_client import TOOLS as CALENDAR_TOOLS, CalendarClient
+from message_utils import build_user_turn
 from tempo_client import TEMPO_TOOLS, TempoClient
 
 logging.basicConfig(
@@ -99,8 +100,10 @@ Style: conversational and direct. Confirm tool actions in one line. Plain text o
 # ---------------------------------------------------------------------------
 
 
-def ask_claude(chat_id: int, user_text: str) -> str:
-    HISTORY[chat_id].append({"role": "user", "content": user_text})
+def ask_claude(
+    chat_id: int, user_text: str, sender_display_name: str = ""
+) -> str:
+    HISTORY[chat_id].append(build_user_turn(user_text, sender_display_name))
     messages = list(HISTORY[chat_id])
 
     for _ in range(MAX_TOOL_ROUNDS):
@@ -167,11 +170,15 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         text = text.replace(f"@{me}", "").strip()
 
-    sender = msg.from_user.first_name if msg.from_user else "Someone"
+    sender_display_name = msg.from_user.first_name if msg.from_user else ""
     await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.TYPING)
 
     try:
-        reply = ask_claude(msg.chat_id, f"{sender}: {text}")
+        reply = ask_claude(
+            msg.chat_id,
+            text,
+            sender_display_name=sender_display_name,
+        )
     except Exception:
         log.exception("Claude call failed")
         await msg.reply_text("Hit an error — try again in a sec.")

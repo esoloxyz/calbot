@@ -11,16 +11,12 @@ if [ ! -x "$TEMPO_BIN" ]; then
 fi
 echo "Tempo ready: $($TEMPO_BIN --version | head -n 1)"
 
-# Restore current wallet credentials, with legacy keys.toml as a fallback
+# Restore the current Tempo wallet credentials.
 install -d -m 700 "$HOME/.tempo/wallet"
-if [ -n "$TEMPO_WALLET_STORE_B64" ]; then
+if [ -n "${TEMPO_WALLET_STORE_B64:-}" ]; then
     printf '%s' "$TEMPO_WALLET_STORE_B64" | base64 -d > "$HOME/.tempo/wallet/store.json"
     chmod 600 "$HOME/.tempo/wallet/store.json"
     echo "Wallet store restored"
-elif [ -n "$TEMPO_KEYS_TOML_B64" ]; then
-    printf '%s' "$TEMPO_KEYS_TOML_B64" | base64 -d > "$HOME/.tempo/wallet/keys.toml"
-    chmod 600 "$HOME/.tempo/wallet/keys.toml"
-    echo "Legacy wallet keys restored"
 else
     echo "ERROR: TEMPO_WALLET_STORE_B64 is not configured" >&2
     exit 1

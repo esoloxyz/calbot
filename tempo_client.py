@@ -14,7 +14,6 @@ log = logging.getLogger("tempo-client")
 TEMPO_BIN = os.environ.get("TEMPO_BIN", os.path.expanduser("~/.tempo/bin/tempo"))
 _WALLET_DIR = os.path.normpath(os.path.join(os.path.dirname(TEMPO_BIN), "..", "wallet"))
 _STORE_PATH = os.path.join(_WALLET_DIR, "store.json")
-_KEYS_PATH = os.path.join(_WALLET_DIR, "keys.toml")
 
 _INCOMPATIBLE_PAYMENT_ENDPOINTS = {
     "https://openai.mpp.tempo.xyz/v1/images/generations": (
@@ -126,37 +125,29 @@ class TempoRequestBudget:
             self.paid_request_submitted = True
 
 
-def restore_wallet_credentials(
-    wallet_dir: str, store_b64: str, legacy_keys_b64: str
-) -> Optional[str]:
-    """Restore the current wallet store, with legacy keys.toml as a fallback."""
-    if store_b64:
-        encoded = store_b64
-        path = os.path.join(wallet_dir, "store.json")
-    elif legacy_keys_b64:
-        encoded = legacy_keys_b64
-        path = os.path.join(wallet_dir, "keys.toml")
-    else:
+def restore_wallet_credentials(wallet_dir: str, store_b64: str) -> Optional[str]:
+    """Restore the current Tempo wallet store from a base64-encoded secret."""
+    if not store_b64:
         return None
 
+    path = os.path.join(wallet_dir, "store.json")
     os.makedirs(wallet_dir, mode=0o700, exist_ok=True)
     os.chmod(wallet_dir, 0o700)
     with open(path, "wb") as credential_file:
-        credential_file.write(base64.b64decode(encoded))
+        credential_file.write(base64.b64decode(store_b64))
     os.chmod(path, 0o600)
     return path
 
 
 def _setup():
     store_b64 = os.environ.get("TEMPO_WALLET_STORE_B64", "")
-    keys_b64 = os.environ.get("TEMPO_KEYS_TOML_B64", "")
-    restored_path = restore_wallet_credentials(_WALLET_DIR, store_b64, keys_b64)
+    restored_path = restore_wallet_credentials(_WALLET_DIR, store_b64)
     if restored_path:
         log.info("Wallet credentials written to %s", restored_path)
 
     # Log startup state
     bin_ok = os.path.exists(TEMPO_BIN)
-    wallet_ok = os.path.exists(_STORE_PATH) or os.path.exists(_KEYS_PATH)
+    wallet_ok = os.path.exists(_STORE_PATH)
     log.info(
         "Tempo startup: bin=%s wallet=%s bin_path=%s",
         bin_ok,
@@ -167,10 +158,8 @@ def _setup():
         log.error("Tempo binary missing at %s", TEMPO_BIN)
     if not wallet_ok:
         log.warning(
-            "Wallet credentials missing (TEMPO_WALLET_STORE_B64 set=%s, "
-            "legacy TEMPO_KEYS_TOML_B64 set=%s)",
+            "Wallet credentials missing (TEMPO_WALLET_STORE_B64 set=%s)",
             bool(store_b64),
-            bool(keys_b64),
         )
 
 

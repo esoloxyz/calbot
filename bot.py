@@ -54,7 +54,7 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 ALLOWED_CHAT_ID = int(os.environ["ALLOWED_CHAT_ID"])
 TIMEZONE = os.environ.get("TIMEZONE", "America/New_York")
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-BOT_OWNER = os.environ.get("BOT_OWNER", os.environ.get("COUPLE_NAMES", "Ezra"))
+BOT_OWNER = os.environ.get("BOT_OWNER", os.environ.get("COUPLE_NAMES", "the user"))
 RESPOND_TO_ALL = os.environ.get("RESPOND_TO_ALL", "true").lower() == "true"
 
 TZ = ZoneInfo(TIMEZONE)

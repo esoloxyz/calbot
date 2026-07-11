@@ -1,4 +1,4 @@
 python-telegram-bot[job-queue]==21.10
-anthropic>=0.45.0
-google-api-python-client>=2.150.0
-google-auth>=2.35.0
+anthropic==0.116.0
+google-api-python-client==2.198.0
+google-auth==2.55.2

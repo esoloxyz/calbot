@@ -1,87 +1,117 @@
-# Couple Calendar Bot — Setup Guide
+# Calbot Setup Guide
 
-A Telegram bot for you two + one shared Google Calendar, powered by Claude.
-Total setup time: ~30 minutes. Running cost: ~$5/mo (Railway) + pennies of Claude API usage.
+Calbot is a Telegram assistant for a shared Google Calendar, powered by Claude.
+Allow about 30 minutes for the initial setup. Running costs depend on your host,
+Claude usage, and any paid MPP services you call.
 
-Say things like:
+It understands messages such as:
 
-- `dinner at Lilia saturday 8pm`
-- `flight to Miami oct 12, 9am`
-- `what do we have this weekend?`
-- `move friday dinner to 7:30`
-- `cancel the dentist thing`
+- `Dinner at Lilia Saturday at 8`
+- `Flight to Miami October 12 at 9 AM`
+- `What do we have this weekend?`
+- `Move Friday's dinner to 7:30`
+- `Use Parallel to research today's Tempo news`
 
-It also posts a **weekend preview every Friday 9 AM** and a **week-ahead digest every Sunday 6 PM**, and supports `/weekend`, `/week`, `/today` on demand.
+It also posts a weekend preview every Friday at 9 AM and a week-ahead digest
+every Sunday at 6 PM. The `/weekend`, `/week`, and `/today` commands provide
+on-demand summaries.
 
----
+## 1. Create and share a Google Calendar
 
-## Step 1 — The shared Gmail + calendar (5 min)
+1. Create a Google account for the shared calendar, or choose an existing
+   calendar that Calbot can manage.
+2. In [Google Calendar](https://calendar.google.com), open the calendar's
+   settings and share it with each intended user using **Make changes to
+   events** permission.
+3. Copy the **Calendar ID** from **Settings → Integrate calendar**. For a default
+   calendar, this is usually an email address such as
+   `sharedcalendar@example.com`.
 
-1. Create the new Gmail account (e.g. `ezraandher@gmail.com`).
-2. Go to [calendar.google.com](https://calendar.google.com) signed into that account. The default calendar is fine, or create one named "Us".
-3. **Share it with both your personal accounts**: calendar Settings → *Share with specific people* → add both personal emails with **"Make changes to events"**. Now it shows up in both your normal Google Calendars too.
-4. Note the **Calendar ID**: Settings → *Integrate calendar* → Calendar ID. For the default calendar it's just the Gmail address itself.
+## 2. Create the Telegram bot
 
-## Step 2 — The Telegram bot (5 min)
+1. Message **@BotFather** in Telegram, run `/newbot`, and copy the token.
+2. In BotFather, open **Bot Settings → Group Privacy** and turn privacy mode off
+   if Calbot should read unmentioned messages in a group.
+3. Add the bot to a private chat or group containing only the intended users.
+4. After deployment, send `/id` to Calbot and copy the returned chat ID. Use it
+   as `ALLOWED_CHAT_ID`; Calbot ignores every other chat.
 
-1. In Telegram, message **@BotFather** → `/newbot` → pick a name and username. Copy the **token**.
-2. Still in BotFather: `/mybots` → your bot → *Bot Settings* → *Group Privacy* → **Turn OFF**. (This lets it read all group messages, not just @mentions.)
-3. Create a **new private group** with just you and your girlfriend, then add the bot to it.
-4. You'll need the group's **chat ID**. Easiest way: deploy the bot first (Step 4), then type `/id` in the group — it replies with the ID (a negative number like `-1001234567890`). Alternatively, add @RawDataBot to the group temporarily and read the `chat.id` it prints.
+## 3. Create a Google Cloud service account
 
-## Step 3 — Google Cloud service account (10 min)
+1. Open [Google Cloud Console](https://console.cloud.google.com) and create a
+   project, such as `calbot`.
+2. Enable the **Google Calendar API**.
+3. Open **IAM & Admin → Service Accounts** and create a service account. It does
+   not need a project-level role.
+4. Open the service account, choose **Keys → Add key → Create new key → JSON**,
+   and store the downloaded file securely.
+5. In Google Calendar, share the managed calendar with the service account's
+   email using **Make changes to events** permission.
 
-This gives the bot its own "robot identity" that can edit the calendar. One-time setup:
+## 4. Prepare a Tempo wallet for MPP
 
-1. Go to [console.cloud.google.com](https://console.cloud.google.com) (any Google account works) → create a new project, e.g. `couple-bot`.
-2. **Enable the API**: search "Google Calendar API" in the top bar → Enable.
-3. **Create the service account**: IAM & Admin → Service Accounts → Create. Name it anything; no roles needed. 
-4. Open the new service account → **Keys** tab → Add Key → JSON. A `.json` file downloads — keep it safe, treat it like a password.
-5. Copy the service account's **email** (looks like `couple-bot@project.iam.gserviceaccount.com`).
-6. Back in the shared Google Calendar's settings → *Share with specific people* → add that service account email with **"Make changes to events"**. ← This step is the one everyone forgets.
+Use a dedicated, low-balance wallet or a limited access key. The wallet store is
+a signing credential and must be handled like a password.
 
-## Step 4 — Deploy on Railway (10 min)
-
-1. Push this folder to a **private GitHub repo** (or use Railway's CLI to deploy the folder directly).
-2. Sign up at [railway.app](https://railway.app) → New Project → Deploy from GitHub repo.
-3. In the service → **Variables**, add everything from `.env.example`:
-   - `TELEGRAM_BOT_TOKEN` — from BotFather
-   - `ANTHROPIC_API_KEY` — from [console.anthropic.com](https://console.anthropic.com) (add ~$5 of credit; this bot will take months to burn through it)
-   - `ALLOWED_CHAT_ID` — set a placeholder like `0` for now
-   - `GOOGLE_SERVICE_ACCOUNT_JSON` — open the downloaded JSON key file and paste its **entire contents** as the value (Railway handles multi-line values fine)
-   - `CALENDAR_ID` — from Step 1
-   - `TIMEZONE` — e.g. `America/New_York`
-   - `COUPLE_NAMES` — e.g. `Ezra and Maya` (used in the bot's personality)
-4. Railway auto-detects the `Procfile` and runs `python bot.py`. Check the deploy logs for `Bot starting (polling)…`.
-5. In your Telegram group, type `/id` → copy the chat ID → update `ALLOWED_CHAT_ID` in Railway → it redeploys automatically.
-6. Type `/start` in the group. You're live. 🎉
-
-## Try it
-
+```bash
+curl -fsSL https://tempo.xyz/install | bash
+"$HOME/.tempo/bin/tempo" wallet login
+"$HOME/.tempo/bin/tempo" wallet whoami --format json
 ```
-You:  dinner at Lilia saturday 8pm
+
+Encode the current wallet store for your deployment platform:
+
+```bash
+base64 < "$HOME/.tempo/wallet/store.json"
+```
+
+Save the output as the secret `TEMPO_WALLET_STORE_B64`. Start with conservative
+limits such as `TEMPO_AUTO_SPEND=0.01` and `TEMPO_MAX_SPEND=0.50`. The access
+key's wallet-level spending limit is an additional safeguard.
+
+## 5. Deploy
+
+1. Push the repository to GitHub, or deploy the checkout directly with your
+   hosting provider's CLI.
+2. Create a Railway project and connect the repository.
+3. Add the variables from [.env.example](.env.example):
+   - `TELEGRAM_BOT_TOKEN`
+   - `ALLOWED_CHAT_ID` (use `0` until you can run `/id`)
+   - `ANTHROPIC_API_KEY`
+   - `GOOGLE_SERVICE_ACCOUNT_JSON` (the complete downloaded JSON document)
+   - `CALENDAR_ID`
+   - `TEMPO_WALLET_STORE_B64`
+   - `TEMPO_AUTO_SPEND` and `TEMPO_MAX_SPEND`
+   - `TIMEZONE` and `BOT_OWNER`
+4. Confirm the logs contain `Bot starting (polling)…`.
+5. Send `/id`, replace the temporary `ALLOWED_CHAT_ID`, and let Railway
+   redeploy.
+6. Send `/start`, `/today`, and `/balance` to verify Telegram, Calendar, and
+   Tempo connectivity.
+
+## Example
+
+```text
+User: Dinner at Lilia Saturday at 8
 Bot:  Added ✓ Dinner at Lilia — Sat, Jul 11, 8:00 PM
 
-Her:  I have a hair appt tuesday at 4
-Bot:  Added ✓ Hair appointment — Tue, Jul 14, 4:00 PM
+Another user: I have an appointment Tuesday at 4
+Bot:          Added ✓ Appointment — Tue, Jul 14, 4:00 PM
 
-You:  /weekend
-Bot:  Your weekend: Saturday — Dinner at Lilia at 8 PM. Sunday's wide open 🙌
+User: /weekend
+Bot:  Your weekend: Saturday — Dinner at Lilia at 8 PM. Sunday is open.
 ```
 
-Events also appear instantly in both your normal Google Calendar apps, since the calendar is shared with your personal accounts.
+Calendar events appear in every account with which the calendar is shared.
 
-## Tweaks
+## Operational notes
 
-- **Bot replying to messages meant for each other?** It's prompted to stay quiet (`PASS`) on non-calendar chatter, but if it's still chatty, set `RESPOND_TO_ALL=false` — then it only responds to @mentions and replies.
-- **Change digest times**: edit the two `run_daily` lines at the bottom of `bot.py`.
-- **Add a daily morning digest**: copy the `scheduled_digest` pattern with a new `data` label.
-- **Memory**: the bot remembers the last ~24 messages of context (enough for "actually make that 8:30"), resetting on redeploy.
-
-## Cost summary
-
-| Item | Cost |
-|---|---|
-| Railway Hobby | $5/mo (includes usage credit that this bot fits within) |
-| Claude API (Sonnet) | ~$0.01–0.05/day at couple-usage volume |
-| Telegram, Google Calendar | Free |
+- Set `RESPOND_TO_ALL=false` if Calbot should respond only to mentions and
+  replies.
+- The bot keeps a short in-memory conversation history for follow-up requests;
+  it resets on redeploy.
+- Scheduled digest times are configured near the bottom of `bot.py`.
+- Keep secrets in the hosting platform's secret store, never in Git or `.env`
+  files committed to the repository.
+- See [SECURITY.md](SECURITY.md) for vulnerability reporting and incident
+  guidance.

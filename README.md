@@ -56,7 +56,7 @@ The full Telegram, Google Cloud, Calendar, and Railway walkthrough is in
 
 ### Requirements
 
-- Python 3.9+
+- Python 3.12+
 - A Telegram bot token
 - An Anthropic API key
 - A Google Cloud service account with Calendar access
@@ -68,7 +68,7 @@ The full Telegram, Google Cloud, Calendar, and Railway walkthrough is in
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.lock
 ```
 
 Install and authenticate the Tempo CLI:
@@ -98,7 +98,6 @@ See [.env.example](.env.example) for sample values.
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Yes | Google service-account JSON on one line |
 | `CALENDAR_ID` | Yes | Calendar the bot can manage |
 | `TEMPO_WALLET_STORE_B64` | Yes | Base64-encoded current Tempo wallet store |
-| `TEMPO_KEYS_TOML_B64` | No | Legacy fallback for older `keys.toml` wallets |
 | `TEMPO_AUTO_SPEND` | No | Cumulative automatic budget per Telegram message; defaults to `0.01` |
 | `TEMPO_MAX_SPEND` | No | Absolute ceiling for an explicitly approved call; defaults to `0.50` |
 | `TEMPO_BIN` | No | Tempo binary path; defaults to `~/.tempo/bin/tempo` |
@@ -183,8 +182,9 @@ Calbot can also perform these actions through normal conversation.
 
 ## Deploying
 
-The Docker image installs Python dependencies, the SQLite runtime required by
-Tempo's payment extension, and a GPG-verified Tempo CLI. The
+The Docker image installs hash-locked Python dependencies, the SQLite runtime
+required by Tempo's payment extension, and a version-pinned, GPG-verified Tempo
+CLI. The Ubuntu base image is pinned to an immutable digest. The
 wallet key is restored from `TEMPO_WALLET_STORE_B64` at startup or import time, so
 the app works whether Railway uses the Docker `CMD` or an explicit `python
 bot.py` start-command override.
@@ -203,7 +203,7 @@ binary missing`, `Wallet keys missing`, or `Tempo command failed`.
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m py_compile tempo_client.py bot.py calendar_client.py
+python3 -m py_compile tempo_client.py bot.py calendar_client.py assistant_policy.py payment_approval.py
 bash -n start.sh
 ```
 
@@ -222,10 +222,12 @@ retry prevention, and free task polling.
 | `payment_approval.py` | Exact, expiring confirmations for higher-priced MPP calls |
 | `Dockerfile` | Railway/container image with Tempo installed |
 | `start.sh` | Wallet restoration and process startup |
+| `requirements.lock` | Fully resolved, hash-locked production dependencies |
 | `tests/test_tempo_client.py` | Tempo/MPP acceptance tests |
 | `SETUP.md` | Detailed first-time deployment guide |
+| `SECURITY.md` | Vulnerability-reporting and secret-handling policy |
 
-## Security notes
+## Security
 
 - Never commit `.env`, Google credentials, Telegram tokens, or Tempo keys.
 - Keep the bot in a private chat and configure `ALLOWED_CHAT_ID`.
@@ -236,3 +238,10 @@ retry prevention, and free task polling.
 - Keep `TEMPO_AUTO_SPEND` at the smallest fixed price you are comfortable
   allowing without confirmation.
 - Review dynamic-price endpoints before raising `TEMPO_MAX_SPEND`.
+
+Please report vulnerabilities privately rather than opening a public issue. See
+[SECURITY.md](SECURITY.md) for the reporting process.
+
+## License
+
+Calbot is available under the [MIT License](LICENSE).

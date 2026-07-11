@@ -158,6 +158,12 @@ Calbot first states the price, asks for approval, and stops until it receives a
 clear confirmation. A reply containing a different amount or a negation is
 rejected.
 
+For ordinary image generation, Calbot prefers fal.ai's FLUX Schnell endpoint,
+which uses a fixed one-time `$0.003` MPP charge. The OpenAI DALL-E MPP endpoint
+is blocked for now because its live server requests a session voucher even
+though the service directory advertises a one-time charge; that session flow is
+not compatible with Calbot's access-key wallet.
+
 The application ceiling is defense in depth; it does not replace the wallet
 access key's on-chain spending limit. If the host or signing key is compromised,
 revoke the key from the Tempo wallet.

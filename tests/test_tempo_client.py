@@ -28,6 +28,40 @@ PARALLEL = {
     ],
 }
 
+OPENAI = {
+    "id": "openai",
+    "service_url": "https://openai.mpp.tempo.xyz",
+    "endpoints": [
+        {
+            "method": "POST",
+            "path": "/v1/images/generations",
+            "payment": {
+                "intent": "charge",
+                "amount": "50000",
+                "decimals": 6,
+                "dynamic": None,
+            },
+        }
+    ],
+}
+
+FAL = {
+    "id": "fal",
+    "service_url": "https://fal.mpp.tempo.xyz",
+    "endpoints": [
+        {
+            "method": "POST",
+            "path": "/fal-ai/flux/schnell",
+            "payment": {
+                "intent": "charge",
+                "amount": "3000",
+                "decimals": 6,
+                "dynamic": None,
+            },
+        }
+    ],
+}
+
 
 class TempoClientAcceptanceTests(unittest.TestCase):
     def setUp(self):
@@ -347,6 +381,52 @@ class TempoClientAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(result["error_code"], "paid_request_already_submitted")
         self.assertEqual(run.call_count, 2)
+
+    @patch("tempo_client.subprocess.run")
+    def test_known_broken_openai_image_session_is_blocked_before_payment(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(OPENAI), stderr=""
+        )
+        self.client.service_details("openai")
+
+        result = json.loads(
+            self.client.call_service(
+                "https://openai.mpp.tempo.xyz/v1/images/generations",
+                body='{"model":"dall-e-3","prompt":"a puppy"}',
+                max_spend="0.05",
+                request_budget=TempoRequestBudget(),
+            )
+        )
+
+        self.assertEqual(result["error_code"], "incompatible_payment_session")
+        self.assertIn("fal", result["error"])
+        self.assertEqual(run.call_count, 1)
+
+    @patch("tempo_client.subprocess.run")
+    def test_fal_flux_image_uses_fixed_three_tenths_cent_charge(self, run):
+        run.side_effect = [
+            subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=json.dumps(FAL), stderr=""
+            ),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout='{"images":[{"url":"https://example.com/puppy.png"}]}',
+                stderr="",
+            ),
+        ]
+        self.client.service_details("fal")
+
+        result = json.loads(
+            self.client.call_service(
+                "https://fal.mpp.tempo.xyz/fal-ai/flux/schnell",
+                body='{"prompt":"an adorable puppy"}',
+                request_budget=TempoRequestBudget(),
+            )
+        )
+
+        self.assertIn("images", result)
+        self.assertEqual(run.call_args_list[1].args[0][6], "0.003")
 
 
 if __name__ == "__main__":

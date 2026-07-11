@@ -33,6 +33,7 @@ from telegram.ext import (
 )
 
 from calendar_client import TOOLS as CALENDAR_TOOLS, CalendarClient
+from assistant_policy import TEMPO_ASSISTANT_POLICY
 from message_utils import build_user_turn
 from payment_approval import PendingPaymentApproval
 from tempo_client import TEMPO_TOOLS, TempoClient, TempoRequestBudget
@@ -84,17 +85,7 @@ CALENDAR
 - Answer schedule questions by listing events first, then summarizing.
 - Update or delete events when asked. If ambiguous, list matches and ask which one.
 
-TEMPO / PAID APIS
-- Access external APIs and services via Tempo (stablecoin-powered). When asked to use a service (image generation, web search, Parallel, browser automation, etc.):
-  1. Use tempo_discover_services to find the right service
-  2. Use tempo_service_details to get the exact URL, endpoint, and body schema
-  3. Use tempo_call_service to call it — never guess endpoint paths
-- Prefer fixed-price $0.01 search/extract endpoints for ordinary requests.
-- Use dynamic task/research endpoints only when the user explicitly requests deeper research.
-- If a tool returns confirmation_required, tell the user the exact confirmation phrase and stop.
-- Never retry a paid call after it has been submitted, even if its response is an error.
-- Task status polling is free; poll the exact run URL returned by the submitted task.
-- Use tempo_wallet_balance to check balance when asked.
+{TEMPO_ASSISTANT_POLICY}
 
 GENERAL
 - Answer questions, help think through problems, draft messages, do research, etc.

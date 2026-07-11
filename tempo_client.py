@@ -16,6 +16,14 @@ _WALLET_DIR = os.path.normpath(os.path.join(os.path.dirname(TEMPO_BIN), "..", "w
 _STORE_PATH = os.path.join(_WALLET_DIR, "store.json")
 _KEYS_PATH = os.path.join(_WALLET_DIR, "keys.toml")
 
+_INCOMPATIBLE_PAYMENT_ENDPOINTS = {
+    "https://openai.mpp.tempo.xyz/v1/images/generations": (
+        "OpenAI image generation currently advertises an MPP session voucher that "
+        "is incompatible with this access-key wallet. Use Tempo service 'fal' and "
+        "the fixed-price /fal-ai/flux/schnell endpoint instead."
+    )
+}
+
 
 def _decimal_text(value: Decimal) -> str:
     return f"{value:.2f}"
@@ -329,6 +337,14 @@ class TempoClient:
                         f"Discovered endpoint does not support {method}; "
                         f"allowed: {', '.join(sorted(allowed_methods))}"
                     )
+                }
+            )
+        incompatible_reason = _INCOMPATIBLE_PAYMENT_ENDPOINTS.get(url)
+        if incompatible_reason:
+            return json.dumps(
+                {
+                    "error": incompatible_reason,
+                    "error_code": "incompatible_payment_session",
                 }
             )
         payment = self._endpoint_payments.get((url, method))

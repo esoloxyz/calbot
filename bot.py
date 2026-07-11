@@ -31,7 +31,8 @@ from telegram.ext import (
     filters,
 )
 
-from calendar_client import TOOLS, CalendarClient
+from calendar_client import TOOLS as CALENDAR_TOOLS, CalendarClient
+from tempo_client import TEMPO_TOOLS, TempoClient
 
 logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s", level=logging.INFO
@@ -54,6 +55,9 @@ TZ = ZoneInfo(TIMEZONE)
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 cal = CalendarClient()
+tempo = TempoClient()
+
+ALL_TOOLS = CALENDAR_TOOLS + TEMPO_TOOLS
 
 # Rolling conversation memory per chat (survives until process restart)
 HISTORY: dict[int, deque] = defaultdict(lambda: deque(maxlen=24))
@@ -71,6 +75,7 @@ Your job:
 - When they mention plans, reservations, appointments, trips, etc., add them to the shared calendar using tools. Infer sensible details (default dinner length 2h, appointments 1h). Resolve relative dates ("saturday", "next friday") against the current date above.
 - Answer questions about their schedule by listing events first, then summarizing warmly and concisely.
 - Update or delete events when asked. If a delete request is ambiguous, list matches and ask which one.
+- You also have access to Tempo — a stablecoin-powered API marketplace. When asked to use a Tempo service (e.g. Parallel, image generation, web search, browser automation), use tempo_discover_services to find it, tempo_service_details to get the exact endpoint, then tempo_call_service to call it. Always check service details before calling. Use tempo_wallet_balance to report balance when asked.
 - If a message is just chat between the two of them and clearly not for you, reply with exactly: PASS
 
 Style:
@@ -93,7 +98,7 @@ def ask_claude(chat_id: int, user_text: str) -> str:
             model=MODEL,
             max_tokens=1500,
             system=system_prompt(),
-            tools=TOOLS,
+            tools=ALL_TOOLS,
             messages=messages,
         )
 
@@ -108,7 +113,10 @@ def ask_claude(chat_id: int, user_text: str) -> str:
         for block in response.content:
             if block.type == "tool_use":
                 log.info("tool %s %s", block.name, block.input)
-                output = cal.run_tool(block.name, dict(block.input))
+                if block.name.startswith("tempo_"):
+                    output = tempo.run_tool(block.name, dict(block.input))
+                else:
+                    output = cal.run_tool(block.name, dict(block.input))
                 results.append(
                     {
                         "type": "tool_result",

@@ -97,7 +97,8 @@ See [.env.example](.env.example) for sample values.
 | `ANTHROPIC_MODEL` | No | Claude model; defaults to `claude-sonnet-4-6` |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Yes | Google service-account JSON on one line |
 | `CALENDAR_ID` | Yes | Calendar the bot can manage |
-| `TEMPO_KEYS_TOML_B64` | Yes | Base64-encoded Tempo access-key file |
+| `TEMPO_WALLET_STORE_B64` | Yes | Base64-encoded current Tempo wallet store |
+| `TEMPO_KEYS_TOML_B64` | No | Legacy fallback for older `keys.toml` wallets |
 | `TEMPO_MAX_SPEND` | No | Hard per-request ceiling; defaults to `0.50` |
 | `TEMPO_BIN` | No | Tempo binary path; defaults to `~/.tempo/bin/tempo` |
 | `TIMEZONE` | No | IANA timezone; defaults to `America/New_York` |
@@ -106,14 +107,14 @@ See [.env.example](.env.example) for sample values.
 
 ## Configure the Tempo wallet on Railway
 
-`keys.toml` contains a signing key. Use a dedicated, low-balance wallet or a
+`store.json` contains a signing key. Use a dedicated, low-balance wallet or a
 limited access key, and treat the encoded value as a production secret.
 
 From a Railway-linked checkout:
 
 ```bash
-base64 < "$HOME/.tempo/wallet/keys.toml" |
-  railway variable set TEMPO_KEYS_TOML_B64 --stdin \
+base64 < "$HOME/.tempo/wallet/store.json" |
+  railway variable set TEMPO_WALLET_STORE_B64 --stdin \
     --service worker --environment production
 
 printf '0.50' |
@@ -154,7 +155,7 @@ Calbot can also perform these actions through normal conversation.
 ## Deploying
 
 The Docker image installs Python dependencies and a GPG-verified Tempo CLI. The
-wallet key is restored from `TEMPO_KEYS_TOML_B64` at startup or import time, so
+wallet key is restored from `TEMPO_WALLET_STORE_B64` at startup or import time, so
 the app works whether Railway uses the Docker `CMD` or an explicit `python
 bot.py` start-command override.
 

@@ -1,10 +1,52 @@
 """Tempo wallet/MPP client + tool definitions for Claude."""
 
 import json
+import logging
 import os
 import subprocess
 
+log = logging.getLogger("tempo-client")
+
 TEMPO_BIN = os.environ.get("TEMPO_BIN", os.path.expanduser("~/.tempo/bin/tempo"))
+
+
+def _install_cli():
+    """Install the Tempo CLI if it's not already present."""
+    if os.path.exists(TEMPO_BIN):
+        return
+    log.info("Tempo CLI not found at %s — installing...", TEMPO_BIN)
+    result = subprocess.run(
+        ["bash", "-c", "curl -fsSL https://tempo.xyz/install | bash"],
+        timeout=120,
+    )
+    if result.returncode != 0:
+        log.error("Tempo CLI install failed (exit %d)", result.returncode)
+    elif os.path.exists(TEMPO_BIN):
+        log.info("Tempo CLI installed successfully")
+    else:
+        log.error("Tempo CLI install ran but binary still not found at %s", TEMPO_BIN)
+
+
+def _restore_keys():
+    """Write wallet keys from env var if the keys file doesn't exist."""
+    keys_b64 = os.environ.get("TEMPO_KEYS_TOML_B64", "")
+    if not keys_b64:
+        return
+    keys_path = os.path.normpath(
+        os.path.join(os.path.dirname(TEMPO_BIN), "..", "wallet", "keys.toml")
+    )
+    if os.path.exists(keys_path):
+        return
+    os.makedirs(os.path.dirname(keys_path), exist_ok=True)
+    import base64
+    with open(keys_path, "wb") as f:
+        f.write(base64.b64decode(keys_b64))
+    os.chmod(keys_path, 0o600)
+    log.info("Wallet keys restored to %s", keys_path)
+
+
+_install_cli()
+_restore_keys()
 
 
 class TempoClient:

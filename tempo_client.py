@@ -12,33 +12,41 @@ TEMPO_BIN = os.environ.get("TEMPO_BIN", os.path.expanduser("~/.tempo/bin/tempo")
 
 def _install_cli():
     """Install the Tempo CLI if it's not already present."""
+    import tempfile
+    import urllib.request
+
     if os.path.exists(TEMPO_BIN):
         log.info("Tempo CLI already present at %s", TEMPO_BIN)
         return
 
-    # Log subprocess environment for debugging
-    env_info = subprocess.run(
-        ["bash", "-c", "echo HOME=$HOME && echo USER=$(whoami) && which curl || echo 'curl not found'"],
-        capture_output=True, text=True, timeout=10,
-    )
-    log.info("Subprocess env: %s", env_info.stdout.strip())
+    log.info("Downloading Tempo install script via Python urllib...")
+    try:
+        req = urllib.request.Request(
+            "https://tempo.xyz/install",
+            headers={"User-Agent": "python-urllib/3"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            install_script = resp.read().decode()
+    except Exception as exc:
+        log.error("Failed to fetch Tempo install script: %s", exc)
+        return
 
-    log.info("Installing Tempo CLI...")
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
+        f.write(install_script)
+        script_path = f.name
+    os.chmod(script_path, 0o755)
+
+    log.info("Running install script %s ...", script_path)
     result = subprocess.run(
-        ["bash", "-c", "curl -fsSL https://tempo.xyz/install | bash 2>&1"],
+        ["bash", script_path],
         capture_output=True, text=True, timeout=120,
     )
-    log.info("Install exit=%d stdout=%s stderr=%s",
-             result.returncode,
-             result.stdout[-800:] if result.stdout else "(empty)",
-             result.stderr[-200:] if result.stderr else "(empty)")
+    os.unlink(script_path)
 
-    # Search broadly for the installed binary
-    found = subprocess.run(
-        ["find", "/", "-name", "tempo", "-type", "f", "-maxdepth", "8"],
-        capture_output=True, text=True, timeout=20,
-    )
-    log.info("Tempo binaries on filesystem: %s", found.stdout.strip() or "(none)")
+    log.info("Install exit=%d\nstdout: %s\nstderr: %s",
+             result.returncode,
+             result.stdout[-1000:] if result.stdout else "(empty)",
+             result.stderr[-500:] if result.stderr else "(empty)")
 
     if os.path.exists(TEMPO_BIN):
         log.info("Tempo CLI ready at %s", TEMPO_BIN)

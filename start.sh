@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -e
 
-# Install Tempo CLI if not already present
-if [ ! -f "$HOME/.tempo/bin/tempo" ]; then
-    echo "Installing Tempo CLI..."
-    curl -fsSL https://tempo.xyz/install | bash
-fi
-
 # Restore wallet credentials from env var
 if [ -n "$TEMPO_KEYS_TOML_B64" ]; then
     mkdir -p "$HOME/.tempo/wallet"

@@ -1,0 +1,5 @@
+[phases.setup]
+aptPkgs = ["curl", "ca-certificates", "bash"]
+
+[phases.build]
+cmds = ["curl -fsSL https://tempo.xyz/install | bash"]

@@ -61,13 +61,38 @@ class PendingPaymentApproval:
     def matches(self, text: str, now: Optional[datetime] = None) -> bool:
         if self.expired(now):
             return False
-        match = re.fullmatch(
-            r"\s*approve\s+\$?([0-9]+(?:\.[0-9]{1,6})?)\s*",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if not match:
+
+        normalized = re.sub(r"[.!]+$", "", text.strip().lower()).strip()
+        if re.search(r"\b(?:do not|don't|not|cancel|stop)\b", normalized):
             return False
-        requested = _normalize_amount(match.group(1))
+
         expected = _normalize_amount(self.amount)
-        return requested is not None and requested == expected
+        mentioned_amounts = [
+            _normalize_amount(dollar or decimal)
+            for dollar, decimal in re.findall(
+                r"\$\s*([0-9]+(?:\.[0-9]{1,6})?)|\b([0-9]+\.[0-9]{1,6})\b",
+                normalized,
+            )
+        ]
+        if mentioned_amounts and any(amount != expected for amount in mentioned_amounts):
+            return False
+
+        simple_confirmations = {
+            "approve",
+            "approved",
+            "yes",
+            "yes please",
+            "confirm",
+            "confirmed",
+            "i confirm",
+            "go ahead",
+            "do it",
+            "proceed",
+        }
+        if normalized in simple_confirmations:
+            return True
+
+        has_confirmation_intent = bool(
+            re.search(r"\b(?:approve|approved|confirm|confirmed)\b", normalized)
+        )
+        return bool(mentioned_amounts) and has_confirmation_intent

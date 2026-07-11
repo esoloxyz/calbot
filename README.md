@@ -138,8 +138,9 @@ Calbot applies several controls before a paid request:
 3. The URL and HTTP method must exactly match a discovered endpoint.
 4. Fixed-price calls up to `TEMPO_AUTO_SPEND` can run automatically; the default
    cumulative budget is `$0.01` per Telegram message.
-5. Dynamic-price calls and calls above the automatic budget require an exact,
-   short-lived confirmation such as `approve $0.10`.
+5. Dynamic-price calls and calls above the automatic budget require a
+   short-lived confirmation. Natural replies such as `approve`, `yes`,
+   `confirm`, or `approve $0.10` are accepted for the one pending call.
 6. Approval is bound to the exact URL, method, body, and spend cap and unlocks
    only one paid submission.
 7. A paid submission is never retried automatically, even when its response is
@@ -153,7 +154,9 @@ Calbot applies several controls before a paid request:
 
 For ordinary web research, Calbot prefers Parallel's fixed-price `$0.01` search
 endpoint. If deeper research needs a `$0.10` `pro` task or `$0.30` `ultra` task,
-Calbot first asks for the exact approval phrase and stops until it receives it.
+Calbot first states the price, asks for approval, and stops until it receives a
+clear confirmation. A reply containing a different amount or a negation is
+rejected.
 
 The application ceiling is defense in depth; it does not replace the wallet
 access key's on-chain spending limit. If the host or signing key is compromised,
@@ -174,7 +177,8 @@ Calbot can also perform these actions through normal conversation.
 
 ## Deploying
 
-The Docker image installs Python dependencies and a GPG-verified Tempo CLI. The
+The Docker image installs Python dependencies, the SQLite runtime required by
+Tempo's payment extension, and a GPG-verified Tempo CLI. The
 wallet key is restored from `TEMPO_WALLET_STORE_B64` at startup or import time, so
 the app works whether Railway uses the Docker `CMD` or an explicit `python
 bot.py` start-command override.
@@ -199,7 +203,8 @@ bash -n start.sh
 
 The acceptance tests cover current Tempo CLI argument order, service discovery,
 endpoint authorization, structured failures, fixed and dynamic pricing,
-cumulative budgets, exact confirmations, retry prevention, and free task polling.
+cumulative budgets, confirmation matching, container payment dependencies,
+retry prevention, and free task polling.
 
 ## Repository layout
 

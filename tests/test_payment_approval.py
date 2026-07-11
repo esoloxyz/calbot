@@ -23,7 +23,7 @@ class PendingPaymentApprovalTests(unittest.TestCase):
             }
         )
 
-    def test_only_exact_amount_confirmation_approves_pending_call(self):
+    def test_natural_confirmation_approves_the_one_pending_call(self):
         pending = PendingPaymentApproval.from_tool_result(
             self.tool_args, self.tool_result, now=self.now
         )
@@ -31,8 +31,20 @@ class PendingPaymentApprovalTests(unittest.TestCase):
         self.assertIsNotNone(pending)
         self.assertTrue(pending.matches("approve $0.10", now=self.now))
         self.assertTrue(pending.matches("APPROVE 0.10", now=self.now))
-        self.assertFalse(pending.matches("yes", now=self.now))
+        self.assertTrue(pending.matches("approve", now=self.now))
+        self.assertTrue(pending.matches("yes", now=self.now))
+        self.assertTrue(pending.matches("I confirm spend of $0.10", now=self.now))
+        self.assertTrue(pending.matches("go ahead", now=self.now))
+
+    def test_wrong_amount_negation_and_unrelated_text_do_not_approve(self):
+        pending = PendingPaymentApproval.from_tool_result(
+            self.tool_args, self.tool_result, now=self.now
+        )
+
         self.assertFalse(pending.matches("approve $0.30", now=self.now))
+        self.assertFalse(pending.matches("do not approve", now=self.now))
+        self.assertFalse(pending.matches("no", now=self.now))
+        self.assertFalse(pending.matches("what will this cost?", now=self.now))
 
     def test_approval_expires_after_ten_minutes(self):
         pending = PendingPaymentApproval.from_tool_result(

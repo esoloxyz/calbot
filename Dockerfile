@@ -10,8 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     curl \
     ca-certificates \
+    sqlite3 \
     gnupg \
     && rm -rf /var/lib/apt/lists/*
+
+RUN sqlite3 --version \
+    && python3 -c "import sqlite3; print(sqlite3.sqlite_version)"
 
 WORKDIR /app
 

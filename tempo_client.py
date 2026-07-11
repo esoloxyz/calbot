@@ -21,10 +21,17 @@ def _install_cli():
     )
     if result.returncode != 0:
         log.error("Tempo CLI install failed (exit %d)", result.returncode)
-    elif os.path.exists(TEMPO_BIN):
-        log.info("Tempo CLI installed successfully")
     else:
-        log.error("Tempo CLI install ran but binary still not found at %s", TEMPO_BIN)
+        # Find where it actually installed
+        found = subprocess.run(
+            ["find", "/root", "/home", "/app", "-name", "tempo", "-type", "f"],
+            capture_output=True, text=True, timeout=15,
+        )
+        log.info("Tempo binaries found after install: %s", found.stdout.strip() or "(none)")
+        if os.path.exists(TEMPO_BIN):
+            log.info("Tempo CLI installed successfully at %s", TEMPO_BIN)
+        else:
+            log.error("Tempo CLI install ran but binary not found at expected path %s", TEMPO_BIN)
 
 
 def _restore_keys():

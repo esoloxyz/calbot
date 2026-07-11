@@ -10,8 +10,16 @@ log = logging.getLogger("tempo-client")
 TEMPO_BIN = os.environ.get("TEMPO_BIN", os.path.expanduser("~/.tempo/bin/tempo"))
 
 
+_TEMPO_VERSION = "1.4.3"
+_TEMPO_URL = (
+    f"https://github.com/tempoxyz/tempo/releases/download/"
+    f"v{_TEMPO_VERSION}/tempo-v{_TEMPO_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+)
+
+
 def _install_cli():
-    """Install the Tempo CLI if it's not already present."""
+    """Download the Tempo binary directly from GitHub releases (no curl/wget needed)."""
+    import tarfile
     import tempfile
     import urllib.request
 
@@ -19,39 +27,41 @@ def _install_cli():
         log.info("Tempo CLI already present at %s", TEMPO_BIN)
         return
 
-    log.info("Downloading Tempo install script via Python urllib...")
+    log.info("Downloading Tempo v%s from GitHub releases...", _TEMPO_VERSION)
     try:
-        req = urllib.request.Request(
-            "https://tempo.xyz/install",
-            headers={"User-Agent": "python-urllib/3"},
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            install_script = resp.read().decode()
+        req = urllib.request.Request(_TEMPO_URL, headers={"User-Agent": "python-urllib/3"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read()
     except Exception as exc:
-        log.error("Failed to fetch Tempo install script: %s", exc)
+        log.error("Failed to download Tempo binary: %s", exc)
         return
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
-        f.write(install_script)
-        script_path = f.name
-    os.chmod(script_path, 0o755)
+    os.makedirs(os.path.dirname(TEMPO_BIN), exist_ok=True)
 
-    log.info("Running install script %s ...", script_path)
-    result = subprocess.run(
-        ["bash", script_path],
-        capture_output=True, text=True, timeout=120,
-    )
-    os.unlink(script_path)
+    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as f:
+        f.write(data)
+        tarball = f.name
 
-    log.info("Install exit=%d\nstdout: %s\nstderr: %s",
-             result.returncode,
-             result.stdout[-1000:] if result.stdout else "(empty)",
-             result.stderr[-500:] if result.stderr else "(empty)")
+    try:
+        with tarfile.open(tarball, "r:gz") as tar:
+            members = tar.getnames()
+            log.info("Archive contents: %s", members)
+            for member in tar.getmembers():
+                if os.path.basename(member.name) == "tempo" and not member.isdir():
+                    member.name = "tempo"
+                    tar.extract(member, path=os.path.dirname(TEMPO_BIN))
+                    break
+    except Exception as exc:
+        log.error("Failed to extract Tempo binary: %s", exc)
+        return
+    finally:
+        os.unlink(tarball)
 
     if os.path.exists(TEMPO_BIN):
-        log.info("Tempo CLI ready at %s", TEMPO_BIN)
+        os.chmod(TEMPO_BIN, 0o755)
+        log.info("Tempo CLI installed at %s", TEMPO_BIN)
     else:
-        log.error("Tempo CLI not found at %s after install", TEMPO_BIN)
+        log.error("Tempo binary not found in archive at expected path %s", TEMPO_BIN)
 
 
 def _restore_keys():

@@ -8,6 +8,33 @@ import subprocess
 log = logging.getLogger("tempo-client")
 
 TEMPO_BIN = os.environ.get("TEMPO_BIN", os.path.expanduser("~/.tempo/bin/tempo"))
+_WALLET_DIR = os.path.normpath(os.path.join(os.path.dirname(TEMPO_BIN), "..", "wallet"))
+_KEYS_PATH = os.path.join(_WALLET_DIR, "keys.toml")
+
+
+def _setup():
+    import base64
+
+    # Restore wallet keys from env var if not already present
+    keys_b64 = os.environ.get("TEMPO_KEYS_TOML_B64", "")
+    if keys_b64 and not os.path.exists(_KEYS_PATH):
+        os.makedirs(_WALLET_DIR, exist_ok=True)
+        with open(_KEYS_PATH, "wb") as f:
+            f.write(base64.b64decode(keys_b64))
+        os.chmod(_KEYS_PATH, 0o600)
+        log.info("Wallet keys written to %s", _KEYS_PATH)
+
+    # Log startup state
+    bin_ok = os.path.exists(TEMPO_BIN)
+    keys_ok = os.path.exists(_KEYS_PATH)
+    log.info("Tempo startup: bin=%s keys=%s bin_path=%s", bin_ok, keys_ok, TEMPO_BIN)
+    if not bin_ok:
+        log.error("Tempo binary missing at %s", TEMPO_BIN)
+    if not keys_ok:
+        log.warning("Wallet keys missing at %s (TEMPO_KEYS_TOML_B64 set=%s)", _KEYS_PATH, bool(keys_b64))
+
+
+_setup()
 
 
 class TempoClient:

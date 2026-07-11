@@ -58,15 +58,21 @@ def _install_cli():
     finally:
         os.unlink(tarball)
 
-    # Log everything that landed in the bin dir
+    # The binary lands as e.g. "tempo-v1.4.3-x86_64-unknown-linux-gnu" — rename to "tempo"
     extracted = os.listdir(extract_dir)
     log.info("Files in %s after extract: %s", extract_dir, extracted)
+    for name in extracted:
+        if name.startswith("tempo") and name != "tempo":
+            src = os.path.join(extract_dir, name)
+            os.rename(src, TEMPO_BIN)
+            log.info("Renamed %s -> %s", name, TEMPO_BIN)
+            break
 
     if os.path.exists(TEMPO_BIN):
         os.chmod(TEMPO_BIN, 0o755)
         log.info("Tempo CLI ready at %s", TEMPO_BIN)
     else:
-        log.error("Tempo binary not at %s — files extracted: %s", TEMPO_BIN, extracted)
+        log.error("Tempo binary not at %s after install", TEMPO_BIN)
 
 
 def _restore_keys():

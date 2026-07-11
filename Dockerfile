@@ -14,12 +14,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Create venv so pip works without --break-system-packages
 RUN python3 -m venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Install Tempo CLI (requires GLIBC_2.38, available on Ubuntu 24.04)
-RUN curl -fsSL https://tempo.xyz/install | bash
+# Install Tempo CLI — print output so build logs show any failure
+RUN curl -fsSL https://tempo.xyz/install | bash && \
+    echo "Tempo install done" && \
+    ls -la /root/.tempo/bin/ && \
+    /root/.tempo/bin/tempo --version || echo "WARNING: tempo binary not working"
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

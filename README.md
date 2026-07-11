@@ -99,7 +99,8 @@ See [.env.example](.env.example) for sample values.
 | `CALENDAR_ID` | Yes | Calendar the bot can manage |
 | `TEMPO_WALLET_STORE_B64` | Yes | Base64-encoded current Tempo wallet store |
 | `TEMPO_KEYS_TOML_B64` | No | Legacy fallback for older `keys.toml` wallets |
-| `TEMPO_MAX_SPEND` | No | Hard per-request ceiling; defaults to `0.50` |
+| `TEMPO_AUTO_SPEND` | No | Cumulative automatic budget per Telegram message; defaults to `0.01` |
+| `TEMPO_MAX_SPEND` | No | Absolute ceiling for an explicitly approved call; defaults to `0.50` |
 | `TEMPO_BIN` | No | Tempo binary path; defaults to `~/.tempo/bin/tempo` |
 | `TIMEZONE` | No | IANA timezone; defaults to `America/New_York` |
 | `BOT_OWNER` | No | Name used in the assistant prompt |
@@ -120,6 +121,10 @@ base64 < "$HOME/.tempo/wallet/store.json" |
 printf '0.50' |
   railway variable set TEMPO_MAX_SPEND --stdin \
     --service worker --environment production
+
+printf '0.01' |
+  railway variable set TEMPO_AUTO_SPEND --stdin \
+    --service worker --environment production
 ```
 
 Confirm the deployed wallet from Telegram with `/balance`.
@@ -131,9 +136,24 @@ Calbot applies several controls before a paid request:
 1. The service must come from Tempo's live service directory.
 2. Calbot must load the service details before calling it.
 3. The URL and HTTP method must exactly match a discovered endpoint.
-4. Every request receives a `--max-spend` limit.
-5. A caller cannot raise the configured `TEMPO_MAX_SPEND` ceiling.
-6. CLI failures are returned as structured errors instead of looking successful.
+4. Fixed-price calls up to `TEMPO_AUTO_SPEND` can run automatically; the default
+   cumulative budget is `$0.01` per Telegram message.
+5. Dynamic-price calls and calls above the automatic budget require an exact,
+   short-lived confirmation such as `approve $0.10`.
+6. Approval is bound to the exact URL, method, body, and spend cap and unlocks
+   only one paid submission.
+7. A paid submission is never retried automatically, even when its response is
+   lost or reports an error.
+8. A caller cannot raise the configured `TEMPO_MAX_SPEND` ceiling or silently
+   raise a lower caller-provided cap to match a service price.
+9. Parallel task calls require a valid `input` and an explicit `pro` or `ultra`
+   processor before payment; returned task IDs authorize only their exact free
+   status-polling URL.
+10. CLI failures are returned as structured errors instead of looking successful.
+
+For ordinary web research, Calbot prefers Parallel's fixed-price `$0.01` search
+endpoint. If deeper research needs a `$0.10` `pro` task or `$0.30` `ultra` task,
+Calbot first asks for the exact approval phrase and stops until it receives it.
 
 The application ceiling is defense in depth; it does not replace the wallet
 access key's on-chain spending limit. If the host or signing key is compromised,
@@ -178,7 +198,8 @@ bash -n start.sh
 ```
 
 The acceptance tests cover current Tempo CLI argument order, service discovery,
-endpoint authorization, structured failures, and the spend ceiling.
+endpoint authorization, structured failures, fixed and dynamic pricing,
+cumulative budgets, exact confirmations, retry prevention, and free task polling.
 
 ## Repository layout
 
@@ -187,6 +208,7 @@ endpoint authorization, structured failures, and the spend ceiling.
 | `bot.py` | Telegram handlers, Claude tool loop, and scheduled summaries |
 | `calendar_client.py` | Google Calendar operations and Claude tool definitions |
 | `tempo_client.py` | Tempo wallet, service discovery, and MPP calls |
+| `payment_approval.py` | Exact, expiring confirmations for higher-priced MPP calls |
 | `Dockerfile` | Railway/container image with Tempo installed |
 | `start.sh` | Wallet restoration and process startup |
 | `tests/test_tempo_client.py` | Tempo/MPP acceptance tests |
@@ -200,4 +222,6 @@ endpoint authorization, structured failures, and the spend ceiling.
 - Keep HTTP client logging at warning level; Telegram API URLs contain the token.
 - Keep mutable Telegram display names out of model-visible message content.
 - Use the smallest practical Tempo wallet balance and access-key allowance.
+- Keep `TEMPO_AUTO_SPEND` at the smallest fixed price you are comfortable
+  allowing without confirmation.
 - Review dynamic-price endpoints before raising `TEMPO_MAX_SPEND`.

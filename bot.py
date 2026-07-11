@@ -14,6 +14,7 @@ Talk to it in plain English:
   "what's my Tempo wallet balance?"
 """
 
+import json
 import logging
 import os
 from collections import defaultdict, deque
@@ -33,7 +34,8 @@ from telegram.ext import (
 
 from calendar_client import TOOLS as CALENDAR_TOOLS, CalendarClient
 from message_utils import build_user_turn
-from tempo_client import TEMPO_TOOLS, TempoClient
+from payment_approval import PendingPaymentApproval
+from tempo_client import TEMPO_TOOLS, TempoClient, TempoRequestBudget
 
 logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s", level=logging.INFO
@@ -64,11 +66,12 @@ ALL_TOOLS = CALENDAR_TOOLS + TEMPO_TOOLS
 
 # Rolling conversation memory per chat (survives until process restart)
 HISTORY: dict[int, deque] = defaultdict(lambda: deque(maxlen=40))
+PENDING_TEMPO_APPROVALS: dict[int, PendingPaymentApproval] = {}
 
 MAX_TOOL_ROUNDS = 10
 
 
-def system_prompt() -> str:
+def system_prompt(approved_call: dict = None) -> str:
     now = datetime.now(TZ)
     return f"""You are a personal AI assistant for {BOT_OWNER}, living in a private Telegram group.
 
@@ -86,13 +89,25 @@ TEMPO / PAID APIS
   1. Use tempo_discover_services to find the right service
   2. Use tempo_service_details to get the exact URL, endpoint, and body schema
   3. Use tempo_call_service to call it — never guess endpoint paths
+- Prefer fixed-price $0.01 search/extract endpoints for ordinary requests.
+- Use dynamic task/research endpoints only when the user explicitly requests deeper research.
+- If a tool returns confirmation_required, tell the user the exact confirmation phrase and stop.
+- Never retry a paid call after it has been submitted, even if its response is an error.
+- Task status polling is free; poll the exact run URL returned by the submitted task.
 - Use tempo_wallet_balance to check balance when asked.
 
 GENERAL
 - Answer questions, help think through problems, draft messages, do research, etc.
 - If a message is clearly not directed at you (just conversation between people), reply with exactly: PASS
 
-Style: conversational and direct. Confirm tool actions in one line. Plain text only, no markdown headers. Emoji sparingly."""
+Style: conversational and direct. Confirm tool actions in one line. Plain text only, no markdown headers. Emoji sparingly.""" + (
+        "\n\nPAYMENT APPROVAL\n"
+        "The current user message approved exactly one previously blocked Tempo call. "
+        "Reissue that call with exactly these arguments; do not alter or add paid calls: "
+        + json.dumps(approved_call, sort_keys=True)
+        if approved_call
+        else ""
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +118,22 @@ Style: conversational and direct. Confirm tool actions in one line. Plain text o
 def ask_claude(
     chat_id: int, user_text: str, sender_display_name: str = ""
 ) -> str:
+    pending = PENDING_TEMPO_APPROVALS.get(chat_id)
+    approved_call = None
+    approved_limit = ""
+    if pending and pending.expired():
+        PENDING_TEMPO_APPROVALS.pop(chat_id, None)
+        pending = None
+    if pending and pending.matches(user_text):
+        approved_call = pending.tool_args
+        approved_limit = pending.amount
+        PENDING_TEMPO_APPROVALS.pop(chat_id, None)
+
+    request_budget = TempoRequestBudget(
+        auto_limit=tempo.auto_spend,
+        approved_call=approved_call,
+        approved_limit=approved_limit,
+    )
     HISTORY[chat_id].append(build_user_turn(user_text, sender_display_name))
     messages = list(HISTORY[chat_id])
 
@@ -110,7 +141,7 @@ def ask_claude(
         response = claude.messages.create(
             model=MODEL,
             max_tokens=2048,
-            system=system_prompt(),
+            system=system_prompt(approved_call),
             tools=ALL_TOOLS,
             messages=messages,
         )
@@ -126,7 +157,17 @@ def ask_claude(
             if block.type == "tool_use":
                 log.info("tool %s %s", block.name, block.input)
                 if block.name.startswith("tempo_"):
-                    output = tempo.run_tool(block.name, dict(block.input))
+                    tool_args = dict(block.input)
+                    output = tempo.run_tool(
+                        block.name,
+                        tool_args,
+                        request_budget=request_budget,
+                    )
+                    approval = PendingPaymentApproval.from_tool_result(
+                        tool_args, output
+                    )
+                    if approval:
+                        PENDING_TEMPO_APPROVALS[chat_id] = approval
                 else:
                     output = cal.run_tool(block.name, dict(block.input))
                 log.info("tool %s result: %s", block.name, output[:200])

@@ -17,12 +17,6 @@ WORKDIR /app
 RUN python3 -m venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Install Tempo CLI — print output so build logs show any failure
-RUN curl -fsSL https://tempo.xyz/install | bash && \
-    echo "Tempo install done" && \
-    ls -la /root/.tempo/bin/ && \
-    /root/.tempo/bin/tempo --version || echo "WARNING: tempo binary not working"
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

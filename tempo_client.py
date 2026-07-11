@@ -13,25 +13,37 @@ TEMPO_BIN = os.environ.get("TEMPO_BIN", os.path.expanduser("~/.tempo/bin/tempo")
 def _install_cli():
     """Install the Tempo CLI if it's not already present."""
     if os.path.exists(TEMPO_BIN):
+        log.info("Tempo CLI already present at %s", TEMPO_BIN)
         return
-    log.info("Tempo CLI not found at %s — installing...", TEMPO_BIN)
-    result = subprocess.run(
-        ["bash", "-c", "curl -fsSL https://tempo.xyz/install | bash"],
-        timeout=120,
+
+    # Log subprocess environment for debugging
+    env_info = subprocess.run(
+        ["bash", "-c", "echo HOME=$HOME && echo USER=$(whoami) && which curl || echo 'curl not found'"],
+        capture_output=True, text=True, timeout=10,
     )
-    if result.returncode != 0:
-        log.error("Tempo CLI install failed (exit %d)", result.returncode)
+    log.info("Subprocess env: %s", env_info.stdout.strip())
+
+    log.info("Installing Tempo CLI...")
+    result = subprocess.run(
+        ["bash", "-c", "curl -fsSL https://tempo.xyz/install | bash 2>&1"],
+        capture_output=True, text=True, timeout=120,
+    )
+    log.info("Install exit=%d stdout=%s stderr=%s",
+             result.returncode,
+             result.stdout[-800:] if result.stdout else "(empty)",
+             result.stderr[-200:] if result.stderr else "(empty)")
+
+    # Search broadly for the installed binary
+    found = subprocess.run(
+        ["find", "/", "-name", "tempo", "-type", "f", "-maxdepth", "8"],
+        capture_output=True, text=True, timeout=20,
+    )
+    log.info("Tempo binaries on filesystem: %s", found.stdout.strip() or "(none)")
+
+    if os.path.exists(TEMPO_BIN):
+        log.info("Tempo CLI ready at %s", TEMPO_BIN)
     else:
-        # Find where it actually installed
-        found = subprocess.run(
-            ["find", "/root", "/home", "/app", "-name", "tempo", "-type", "f"],
-            capture_output=True, text=True, timeout=15,
-        )
-        log.info("Tempo binaries found after install: %s", found.stdout.strip() or "(none)")
-        if os.path.exists(TEMPO_BIN):
-            log.info("Tempo CLI installed successfully at %s", TEMPO_BIN)
-        else:
-            log.error("Tempo CLI install ran but binary not found at expected path %s", TEMPO_BIN)
+        log.error("Tempo CLI not found at %s after install", TEMPO_BIN)
 
 
 def _restore_keys():

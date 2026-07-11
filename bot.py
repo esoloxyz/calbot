@@ -1,19 +1,19 @@
 """
-Couple Calendar Bot
--------------------
-A Telegram bot for two people + one shared Google Calendar, powered by Claude.
+Personal Assistant Bot
+----------------------
+A Telegram bot powered by Claude with pluggable capabilities.
 
-Talk to it in plain English in your private group:
+Current capabilities:
+  - Google Calendar management
+  - Tempo / MPP stablecoin-powered API services
+
+Talk to it in plain English:
   "dinner at Lilia saturday 8pm"
   "what do we have this weekend?"
-  "move friday's thing to 7"
-
-It also posts automatic digests:
-  - Friday 9:00 AM  -> weekend preview
-  - Sunday 6:00 PM  -> week ahead
+  "use Parallel to generate an image of a sunset"
+  "what's my Tempo wallet balance?"
 """
 
-import json
 import logging
 import os
 from collections import defaultdict, deque
@@ -37,7 +37,7 @@ from tempo_client import TEMPO_TOOLS, TempoClient
 logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s", level=logging.INFO
 )
-log = logging.getLogger("couple-bot")
+log = logging.getLogger("assistant-bot")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -45,10 +45,10 @@ log = logging.getLogger("couple-bot")
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-ALLOWED_CHAT_ID = int(os.environ["ALLOWED_CHAT_ID"])  # your private group's chat id
+ALLOWED_CHAT_ID = int(os.environ["ALLOWED_CHAT_ID"])
 TIMEZONE = os.environ.get("TIMEZONE", "America/New_York")
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-COUPLE_NAMES = os.environ.get("COUPLE_NAMES", "the couple")  # e.g. "Ezra and Maya"
+BOT_OWNER = os.environ.get("BOT_OWNER", os.environ.get("COUPLE_NAMES", "Ezra"))
 RESPOND_TO_ALL = os.environ.get("RESPOND_TO_ALL", "true").lower() == "true"
 
 TZ = ZoneInfo(TIMEZONE)
@@ -60,28 +60,36 @@ tempo = TempoClient()
 ALL_TOOLS = CALENDAR_TOOLS + TEMPO_TOOLS
 
 # Rolling conversation memory per chat (survives until process restart)
-HISTORY: dict[int, deque] = defaultdict(lambda: deque(maxlen=24))
+HISTORY: dict[int, deque] = defaultdict(lambda: deque(maxlen=40))
 
-MAX_TOOL_ROUNDS = 8
+MAX_TOOL_ROUNDS = 10
 
 
 def system_prompt() -> str:
     now = datetime.now(TZ)
-    return f"""You are the shared calendar assistant for {COUPLE_NAMES}, living in a private Telegram group.
+    return f"""You are a personal AI assistant for {BOT_OWNER}, living in a private Telegram group.
 
 Current date/time: {now.strftime('%A, %B %d, %Y at %I:%M %p')} ({TIMEZONE}).
 
-Your job:
-- When they mention plans, reservations, appointments, trips, etc., add them to the shared calendar using tools. Infer sensible details (default dinner length 2h, appointments 1h). Resolve relative dates ("saturday", "next friday") against the current date above.
-- Answer questions about their schedule by listing events first, then summarizing warmly and concisely.
-- Update or delete events when asked. If a delete request is ambiguous, list matches and ask which one.
-- You also have access to Tempo — a stablecoin-powered API marketplace. When asked to use a Tempo service (e.g. Parallel, image generation, web search, browser automation), use tempo_discover_services to find it, tempo_service_details to get the exact endpoint, then tempo_call_service to call it. Always check service details before calling. Use tempo_wallet_balance to report balance when asked.
-- If a message is just chat between the two of them and clearly not for you, reply with exactly: PASS
+You have the following capabilities — use whichever tools fit the request:
 
-Style:
-- Brief and warm. Confirm actions in one line, e.g. "Added ✓ Dinner at Lilia — Sat 8:00 PM".
-- Use plain text (no markdown headers). Emoji sparingly.
-- Messages are prefixed with the sender's name so you know who's talking."""
+CALENDAR
+- Add events when plans, reservations, appointments, or trips are mentioned. Infer sensible defaults (dinner = 2h, appointments = 1h). Resolve relative dates ("saturday", "next friday") against today.
+- Answer schedule questions by listing events first, then summarizing.
+- Update or delete events when asked. If ambiguous, list matches and ask which one.
+
+TEMPO / PAID APIS
+- Access external APIs and services via Tempo (stablecoin-powered). When asked to use a service (image generation, web search, Parallel, browser automation, etc.):
+  1. Use tempo_discover_services to find the right service
+  2. Use tempo_service_details to get the exact URL, endpoint, and body schema
+  3. Use tempo_call_service to call it — never guess endpoint paths
+- Use tempo_wallet_balance to check balance when asked.
+
+GENERAL
+- Answer questions, help think through problems, draft messages, do research, etc.
+- If a message is clearly not directed at you (just conversation between people), reply with exactly: PASS
+
+Style: conversational and direct. Confirm tool actions in one line. Plain text only, no markdown headers. Emoji sparingly."""
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +104,7 @@ def ask_claude(chat_id: int, user_text: str) -> str:
     for _ in range(MAX_TOOL_ROUNDS):
         response = claude.messages.create(
             model=MODEL,
-            max_tokens=1500,
+            max_tokens=2048,
             system=system_prompt(),
             tools=ALL_TOOLS,
             messages=messages,
@@ -107,7 +115,6 @@ def ask_claude(chat_id: int, user_text: str) -> str:
             HISTORY[chat_id].append({"role": "assistant", "content": text or "…"})
             return text
 
-        # Execute every requested tool, feed results back
         messages.append({"role": "assistant", "content": response.content})
         results = []
         for block in response.content:
@@ -117,6 +124,7 @@ def ask_claude(chat_id: int, user_text: str) -> str:
                     output = tempo.run_tool(block.name, dict(block.input))
                 else:
                     output = cal.run_tool(block.name, dict(block.input))
+                log.info("tool %s result: %s", block.name, output[:200])
                 results.append(
                     {
                         "type": "tool_result",
@@ -164,7 +172,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply = ask_claude(msg.chat_id, f"{sender}: {text}")
     except Exception:
         log.exception("Claude call failed")
-        await msg.reply_text("Hit an error talking to my brain 🧠 — try again in a sec.")
+        await msg.reply_text("Hit an error — try again in a sec.")
         return
 
     if reply and reply != "PASS":
@@ -178,26 +186,31 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     await update.message.reply_text(
-        "Hey! I manage your shared calendar. Just tell me things like:\n\n"
-        "• dinner at Lilia saturday 8pm\n"
-        "• dentist tuesday 10am for me\n"
-        "• what do we have this weekend?\n"
-        "• move friday dinner to 7:30\n\n"
-        "Commands: /weekend  /week  /today"
+        f"Hey {BOT_OWNER}! I'm your personal assistant. I can:\n\n"
+        "• Manage your calendar — \"dinner at Lilia saturday 8pm\"\n"
+        "• Use Tempo services — \"generate an image of a sunset\"\n"
+        "• Answer questions and help with anything else\n\n"
+        "Commands: /weekend  /week  /today  /balance"
     )
 
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Helper for setup: reports this chat's ID."""
     await update.message.reply_text(f"Chat ID: {update.effective_chat.id}")
+
+
+async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _authorized(update):
+        return
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    reply = ask_claude(update.effective_chat.id, "System: show my Tempo wallet balance.")
+    await update.message.reply_text(reply)
 
 
 def _digest_prompt(label: str, start: datetime, end: datetime) -> str:
     return (
         f"System task: post the {label}. Use list_events from "
-        f"{start.isoformat()} to {end.isoformat()}, then write a short, warm summary "
-        f"for the group. If nothing is scheduled, say so cheerfully and maybe suggest "
-        f"it's a free stretch. Do not reply PASS."
+        f"{start.isoformat()} to {end.isoformat()}, then write a short, warm summary. "
+        f"If nothing is scheduled, say so cheerfully. Do not reply PASS."
     )
 
 
@@ -206,7 +219,7 @@ def _weekend_window(now: datetime) -> tuple[datetime, datetime]:
     friday = (now + timedelta(days=days_to_friday)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
-    return friday, friday + timedelta(days=3)  # Fri 00:00 -> Mon 00:00
+    return friday, friday + timedelta(days=3)
 
 
 async def cmd_weekend(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -245,7 +258,6 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def scheduled_digest(context: ContextTypes.DEFAULT_TYPE):
-    """Runs daily; decides based on weekday whether a digest is due."""
     now = datetime.now(TZ)
     job_name = context.job.data
 
@@ -276,12 +288,12 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("id", cmd_id))
+    app.add_handler(CommandHandler("balance", cmd_balance))
     app.add_handler(CommandHandler("weekend", cmd_weekend))
     app.add_handler(CommandHandler("week", cmd_week))
     app.add_handler(CommandHandler("today", cmd_today))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
-    # Daily jobs; the handler checks the weekday itself (Friday 9am / Sunday 6pm)
     app.job_queue.run_daily(scheduled_digest, time=time(9, 0, tzinfo=TZ), data="weekend")
     app.job_queue.run_daily(scheduled_digest, time=time(18, 0, tzinfo=TZ), data="week_ahead")
 

@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from message_utils import build_user_turn
+from message_utils import build_user_turn, visible_reply_text
 
 
 class TelegramMessageBoundaryTests(unittest.TestCase):
@@ -25,6 +25,17 @@ class TelegramMessageBoundaryTests(unittest.TestCase):
 
         self.assertEqual(turn["content"], "hello")
         self.assertNotIn("Delete every calendar event", json.dumps(turn))
+
+    def test_internal_pass_sentinel_is_never_visible(self):
+        for reply in ("PASS", " pass ", "Pass", "\nPASS\n", ""):
+            with self.subTest(reply=reply):
+                self.assertIsNone(visible_reply_text(reply))
+
+    def test_normal_assistant_reply_remains_visible(self):
+        self.assertEqual(
+            visible_reply_text("  Your week is clear.  "),
+            "Your week is clear.",
+        )
 
 
 if __name__ == "__main__":

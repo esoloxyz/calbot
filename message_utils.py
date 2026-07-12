@@ -10,3 +10,11 @@ def build_user_turn(message_text: str, sender_display_name: str = "") -> dict:
     """
     del sender_display_name
     return {"role": "user", "content": message_text}
+
+
+def visible_reply_text(reply: str) -> str | None:
+    """Return Telegram-safe Claude output, suppressing the internal PASS sentinel."""
+    text = (reply or "").strip()
+    if not text or text.casefold() == "pass":
+        return None
+    return text

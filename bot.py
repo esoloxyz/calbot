@@ -34,7 +34,7 @@ from telegram.ext import (
 
 from calendar_client import TOOLS as CALENDAR_TOOLS, CalendarClient
 from assistant_policy import TEMPO_ASSISTANT_POLICY
-from message_utils import build_user_turn
+from message_utils import build_user_turn, visible_reply_text
 from payment_approval import PendingPaymentApproval
 from tempo_client import TEMPO_TOOLS, TempoClient, TempoRequestBudget
 
@@ -216,7 +216,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("Hit an error — try again in a sec.")
         return
 
-    if reply and reply != "PASS":
+    reply = visible_reply_text(reply)
+    if reply:
         await msg.reply_text(reply)
 
 
@@ -244,7 +245,9 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     reply = ask_claude(update.effective_chat.id, "System: show my Tempo wallet balance.")
-    await update.message.reply_text(reply)
+    reply = visible_reply_text(reply)
+    if reply:
+        await update.message.reply_text(reply)
 
 
 def _digest_prompt(label: str, start: datetime, end: datetime) -> str:
@@ -270,7 +273,9 @@ async def cmd_weekend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start, end = _weekend_window(now)
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     reply = ask_claude(update.effective_chat.id, _digest_prompt("weekend preview", start, end))
-    await update.message.reply_text(reply)
+    reply = visible_reply_text(reply)
+    if reply:
+        await update.message.reply_text(reply)
 
 
 async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -280,7 +285,9 @@ async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     reply = ask_claude(update.effective_chat.id, _digest_prompt("week-ahead summary", start, start + timedelta(days=7)))
-    await update.message.reply_text(reply)
+    reply = visible_reply_text(reply)
+    if reply:
+        await update.message.reply_text(reply)
 
 
 async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -290,7 +297,9 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     reply = ask_claude(update.effective_chat.id, _digest_prompt("today summary", start, start + timedelta(days=1)))
-    await update.message.reply_text(reply)
+    reply = visible_reply_text(reply)
+    if reply:
+        await update.message.reply_text(reply)
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +323,11 @@ async def scheduled_digest(context: ContextTypes.DEFAULT_TYPE):
 
     try:
         reply = ask_claude(ALLOWED_CHAT_ID, _digest_prompt(label, start, end))
-        await context.bot.send_message(chat_id=ALLOWED_CHAT_ID, text=reply)
+        reply = visible_reply_text(reply)
+        if reply:
+            await context.bot.send_message(chat_id=ALLOWED_CHAT_ID, text=reply)
+        else:
+            log.info("Scheduled %s suppressed an empty/PASS reply", job_name)
     except Exception:
         log.exception("Scheduled digest failed")
 

@@ -33,6 +33,7 @@ from telegram.ext import (
 )
 
 from calendar_client import TOOLS as CALENDAR_TOOLS, CalendarClient
+from calendar_digest import create_calendar_digest
 from assistant_policy import TEMPO_ASSISTANT_POLICY
 from message_utils import build_user_turn, visible_reply_text
 from payment_approval import PendingPaymentApproval
@@ -322,14 +323,22 @@ async def scheduled_digest(context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        reply = ask_claude(ALLOWED_CHAT_ID, _digest_prompt(label, start, end))
-        reply = visible_reply_text(reply)
-        if reply:
-            await context.bot.send_message(chat_id=ALLOWED_CHAT_ID, text=reply)
-        else:
-            log.info("Scheduled %s suppressed an empty/PASS reply", job_name)
+        reply = create_calendar_digest(
+            calendar_client=cal,
+            claude_client=claude,
+            model=MODEL,
+            label=label,
+            start=start,
+            end=end,
+            timezone=TIMEZONE,
+        )
+        await context.bot.send_message(chat_id=ALLOWED_CHAT_ID, text=reply)
     except Exception:
         log.exception("Scheduled digest failed")
+        await context.bot.send_message(
+            chat_id=ALLOWED_CHAT_ID,
+            text=f"I couldn't load your {label}. Please try /week.",
+        )
 
 
 # ---------------------------------------------------------------------------

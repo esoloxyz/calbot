@@ -17,6 +17,7 @@ Examples:
 - Creates, lists, updates, and deletes Google Calendar events.
 - Understands conversational dates and follow-up edits.
 - Posts scheduled weekend and week-ahead summaries.
+- Fetches scheduled digests directly from Google Calendar, independent of chat history.
 - Discovers MPP services at runtime instead of hard-coding providers.
 - Pays for approved service calls from a Tempo wallet.
 - Restricts access to one configured Telegram chat.
@@ -203,7 +204,7 @@ binary missing`, `Wallet keys missing`, or `Tempo command failed`.
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m py_compile tempo_client.py bot.py calendar_client.py assistant_policy.py payment_approval.py
+python3 -m py_compile tempo_client.py bot.py calendar_client.py calendar_digest.py assistant_policy.py payment_approval.py
 bash -n start.sh
 ```
 
@@ -218,6 +219,7 @@ retry prevention, and free task polling.
 |---|---|
 | `bot.py` | Telegram handlers, Claude tool loop, and scheduled summaries |
 | `calendar_client.py` | Google Calendar operations and Claude tool definitions |
+| `calendar_digest.py` | Direct calendar fetching and reliable scheduled summaries |
 | `tempo_client.py` | Tempo wallet, service discovery, and MPP calls |
 | `payment_approval.py` | Exact, expiring confirmations for higher-priced MPP calls |
 | `Dockerfile` | Railway/container image with Tempo installed |

@@ -49,6 +49,16 @@ class ContainerDependencyTests(unittest.TestCase):
         self.assertIn("/opt/tempo/bin/tempo-wallet", dockerfile)
         self.assertIn("/opt/tempo/bin/tempo-request", dockerfile)
 
+    def test_tempo_commands_ignore_builder_telemetry_endpoints(self):
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        stages = dockerfile.split("\nFROM ")
+
+        self.assertEqual(len(stages), 2)
+        for stage in stages:
+            self.assertIn("ARG OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", stage)
+            self.assertIn("unset OTEL_EXPORTER_OTLP_ENDPOINT", stage)
+            self.assertIn("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", stage)
+
     def test_startup_exports_the_resolved_tempo_binary_path(self):
         startup = (ROOT / "start.sh").read_text()
 

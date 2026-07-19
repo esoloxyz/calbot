@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tempo_client import TempoClient, restore_wallet_credentials
+from calbot.tempo.client import TempoClient, restore_wallet_credentials
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -282,7 +282,7 @@ class WalletCredentialRestoreTests(unittest.TestCase):
 
         self.assertNotIn("base64 -d", startup)
         self.assertIn("TEMPO_WALLET_STORE_B64:-", startup)
-        self.assertIn("exec python bot.py", startup)
+        self.assertIn("exec python -m calbot", startup)
 
 
 if __name__ == "__main__":

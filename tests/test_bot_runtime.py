@@ -6,8 +6,8 @@ import unittest
 from decimal import Decimal
 from types import SimpleNamespace
 
-from bot_runtime import BlockingBridge, BotConfig, BotRuntime
-from tempo_client import TempoCallPreview
+from calbot.runtime import BlockingBridge, BotConfig, BotRuntime
+from calbot.tempo.client import TempoCallPreview
 
 
 def text_response(text):

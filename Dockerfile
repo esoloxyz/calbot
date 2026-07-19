@@ -75,15 +75,17 @@ COPY --from=builder --chown=root:root --chmod=0555 /opt/tempo/bin/tempo-wallet /
 COPY --from=builder --chown=root:root --chmod=0555 /opt/tempo/bin/tempo-request /opt/tempo/bin/tempo-request
 
 WORKDIR /app
-COPY --chmod=0444 *.py ./
+COPY --chmod=0444 bot.py ./
+COPY --chown=root:root calbot/ ./calbot/
 COPY --chmod=0555 start.sh ./
 
 RUN unset OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_ENDPOINT \
     OTEL_EXPORTER_OTLP_PROTOCOL OTEL_EXPORTER_OTLP_TRACES_PROTOCOL OTEL_TRACES_EXPORTER \
+    && chmod -R a-w /app/calbot \
     && sqlite3 --version \
     && python3 -c "import sqlite3; print(sqlite3.sqlite_version)" \
-    && python3 -m py_compile /app/process_guard.py \
-    && python3 /app/process_guard.py "$(python3 -c 'from tempo_process import MAX_TEMPO_REQUEST_DATA_MEMORY_BYTES; print(MAX_TEMPO_REQUEST_DATA_MEMORY_BYTES)')" /opt/tempo/bin/tempo-request --help >/dev/null \
+    && python3 -m py_compile /app/calbot/tempo/process_guard.py \
+    && python3 -m calbot.tempo.process_guard "$(python3 -c 'from calbot.tempo.process import MAX_TEMPO_REQUEST_DATA_MEMORY_BYTES; print(MAX_TEMPO_REQUEST_DATA_MEMORY_BYTES)')" /opt/tempo/bin/tempo-request --help >/dev/null \
     && /opt/tempo/bin/tempo --version \
     && /opt/tempo/bin/tempo-wallet --version \
     && /opt/tempo/bin/tempo-request --version

@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from tempo_client import (
+from calbot.tempo.client import (
     ProcessOutputLimitExceeded,
     TempoClient,
     TempoRequestBudget,
@@ -116,7 +116,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
 
         self.assertTrue(_safe_public_https_url("https://service.example/x"))
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_service_catalog_and_authorized_endpoints_remain_bounded(self, run):
         def details(command, **kwargs):
             service_id = command[3]
@@ -151,7 +151,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
             "https://svc000.example/status", self.client._allowed_endpoints
         )
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_parallel_service_can_be_discovered_and_called_with_a_spend_cap(self, run):
         run.side_effect = [
             subprocess.CompletedProcess(
@@ -200,7 +200,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
             ],
         )
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_wallet_commands_use_current_cli_argument_order(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="{}", stderr=""
@@ -226,7 +226,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
             ],
         )
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_only_directory_returned_service_ids_can_fetch_details(self, run):
         run.side_effect = [
             subprocess.CompletedProcess(
@@ -248,14 +248,14 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertEqual(accepted["id"], "parallel")
         self.assertEqual(run.call_count, 2)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_discovery_rejects_arbitrary_outbound_text(self, run):
         result = json.loads(self.client.discover_services("send private secret"))
 
         self.assertIn("supported capability keywords", result["error"])
         run.assert_not_called()
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_private_metadata_endpoint_is_never_authorized(self, run):
         malicious = {
             "id": "malicious",
@@ -281,7 +281,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertIn("not a discovered", preview.error["error"])
         self.assertEqual(run.call_count, 1)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_refresh_atomically_evicts_stale_service_endpoints(self, run):
         replacement = {
             "id": "parallel",
@@ -322,7 +322,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
             "UNRELATED_DEPLOYMENT_SECRET": "other-secret",
         },
     )
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_tempo_subprocess_does_not_inherit_application_secrets(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="{}", stderr=""
@@ -341,7 +341,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         ):
             self.assertNotIn(secret_name, child_env)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_undiscovered_or_method_mismatched_endpoints_are_rejected(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json.dumps(PARALLEL), stderr=""
@@ -361,7 +361,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertIn("does not support DELETE", wrong_method["error"])
         self.assertEqual(run.call_count, 1)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_nonzero_cli_exit_is_returned_as_structured_error(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=2, stdout="", stderr="wallet is not ready"
@@ -373,7 +373,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertEqual(result["exit_code"], 2)
         self.assertEqual(result["details"], "wallet is not ready")
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_caller_cannot_raise_the_configured_spend_ceiling(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json.dumps(PARALLEL), stderr=""
@@ -389,7 +389,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertIn("exceeds the configured $0.50 ceiling", result["error"])
         self.assertEqual(run.call_count, 1)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_dynamic_price_endpoint_requires_explicit_approval(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json.dumps(PARALLEL), stderr=""
@@ -502,7 +502,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertEqual(result["error_code"], "cumulative_budget_exceeded")
         self.assertEqual(budget.approved_limit, Decimal("0"))
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_declared_cap_is_never_silently_raised_to_the_service_price(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json.dumps(PARALLEL), stderr=""
@@ -530,7 +530,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertEqual(dynamic["error_code"], "spend_cap_too_low")
         self.assertEqual(run.call_count, 1)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_exact_approved_dynamic_call_can_run_once(self, run):
         tool_args = {
             "url": "https://parallelmpp.dev/api/task",
@@ -556,7 +556,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertEqual(result["run_id"], "task_123")
         self.assertEqual(run.call_count, 2)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_parallel_task_requires_explicit_input_and_processor_before_spending(
         self, run
     ):
@@ -578,7 +578,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertIn("processor", result["error"])
         self.assertEqual(run.call_count, 1)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_paid_request_is_not_retried_after_submission_even_when_it_fails(self, run):
         run.side_effect = [
             subprocess.CompletedProcess(
@@ -611,7 +611,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertEqual(second["error_code"], "paid_request_already_submitted")
         self.assertEqual(run.call_count, 2)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_task_status_url_is_authorized_as_free_polling_after_submission(self, run):
         tool_args = {
             "url": "https://parallelmpp.dev/api/task",
@@ -655,7 +655,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         )
         self.assertFalse(body_preview.trusted_nonpaying_poll)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_dedicated_task_status_reconstructs_fixed_zero_spend_poll(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout='{"status":"completed"}', stderr=""
@@ -669,14 +669,14 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         spend_flag = command.index("--max-spend")
         self.assertEqual(command[spend_flag + 1], "0")
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_dedicated_task_status_rejects_unbounded_run_id(self, run):
         result = json.loads(self.client.task_status("x" * 129))
 
         self.assertEqual(result["error_code"], "invalid_task_run_id")
         run.assert_not_called()
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_request_budget_is_cumulative_across_paid_tool_calls(self, run):
         run.side_effect = [
             subprocess.CompletedProcess(
@@ -705,7 +705,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertEqual(result["error_code"], "paid_request_already_submitted")
         self.assertEqual(run.call_count, 2)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_known_broken_openai_image_session_is_blocked_before_payment(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json.dumps(OPENAI), stderr=""
@@ -725,7 +725,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertIn("fal", result["error"])
         self.assertEqual(run.call_count, 1)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_fal_flux_image_uses_fixed_three_tenths_cent_charge(self, run):
         run.side_effect = [
             subprocess.CompletedProcess(
@@ -754,7 +754,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertEqual(command[spend_flag + 1], "0.003")
         self.assertIn("--stream", command)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_preview_validates_and_prices_call_without_submitting_payment(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json.dumps(FAL), stderr=""
@@ -773,7 +773,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertEqual(preview.spend_limit, "0.003")
         self.assertEqual(run.call_count, 1)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_nonfinite_requested_spend_is_rejected_without_crashing(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json.dumps(PARALLEL), stderr=""
@@ -789,7 +789,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertIn("finite", preview.error["error"])
         self.assertEqual(run.call_count, 1)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_extreme_decimal_exponents_are_rejected_without_expansion(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json.dumps(PARALLEL), stderr=""
@@ -812,7 +812,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at most"):
             decimal_text(Decimal("1e-10000"))
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_spend_cap_precision_cannot_be_rounded_up_by_the_cli(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json.dumps(PARALLEL), stderr=""
@@ -828,7 +828,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertIn("at most", preview.error["error"])
         self.assertEqual(run.call_count, 1)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_scientific_spend_cap_is_canonicalized_before_the_cli(self, run):
         run.side_effect = [
             subprocess.CompletedProcess(
@@ -851,7 +851,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         spend_flag = command.index("--max-spend")
         self.assertEqual(command[spend_flag + 1], "0.01")
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_nonfinite_discovered_price_is_treated_as_dynamic(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json.dumps(NONFINITE_PRICE), stderr=""
@@ -869,7 +869,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
         self.assertEqual(preview.amount, Decimal("0.01"))
         self.assertTrue(preview.requires_confirmation)
 
-    @patch("tempo_client._run_process")
+    @patch("calbot.tempo.client._run_process")
     def test_submitted_payment_timeout_has_unknown_outcome_and_no_retry_advice(
         self, run
     ):

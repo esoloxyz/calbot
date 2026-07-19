@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from action_authorization import PendingActionStore
+from calbot.authorization import PendingActionStore
 
 
 class PendingActionStoreTests(unittest.TestCase):

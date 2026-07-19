@@ -1,6 +1,6 @@
 import unittest
 
-from assistant_policy import TEMPO_ASSISTANT_POLICY
+from calbot.assistant.policy import TEMPO_ASSISTANT_POLICY
 
 
 class AssistantTempoPolicyTests(unittest.TestCase):

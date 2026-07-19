@@ -3,7 +3,11 @@ import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from calendar_digest import MAX_DIGEST_CHARS, MAX_DIGEST_EVENTS, create_calendar_digest
+from calbot.calendar.digest import (
+    MAX_DIGEST_CHARS,
+    MAX_DIGEST_EVENTS,
+    create_calendar_digest,
+)
 
 
 TZ = ZoneInfo("America/New_York")

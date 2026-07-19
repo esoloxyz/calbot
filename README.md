@@ -55,15 +55,15 @@ endpoints and HTTP methods.
 
 ### Code layout
 
-- `bot.py` is the Telegram adapter; `bot_runtime.py` owns application state and approvals.
-- `assistant_tool_loop.py` orchestrates model/tool rounds, while
-  `assistant_postconditions.py` and `assistant_tool_execution.py` enforce
-  executor-owned replies and typed tool boundaries.
-- `tempo_client.py` orchestrates Tempo calls and preserves the public facade.
-  Process isolation, wallet validation, payment authorization, catalog
-  validation, and tool schemas live in the corresponding `tempo_*` modules.
-- `calendar_client.py` owns Google Calendar validation and mutations;
-  `calendar_digest.py` renders deterministic summaries.
+- `calbot/telegram_app.py` is the Telegram adapter; `calbot/runtime.py` owns
+  application state and approvals.
+- `calbot/assistant/` contains model policy, tool-round orchestration, typed tool
+  execution, and response postconditions.
+- `calbot/tempo/` contains the Tempo facade, catalog validation, payment policy,
+  subprocess isolation, tool schemas, and wallet validation.
+- `calbot/calendar/` contains Google Calendar validation, mutations, and
+  deterministic digest rendering.
+- The root `bot.py` is only a compatibility launcher for existing host overrides.
 
 ## Setup
 
@@ -94,7 +94,7 @@ dedicated Calbot wallet.
 Set the required environment variables, then start Calbot:
 
 ```bash
-python bot.py
+python -m calbot
 ```
 
 ## Configuration
@@ -226,6 +226,11 @@ unprivileged `calbot` user. The wallet key is restored once from
 whether Railway uses the Docker `CMD` or an explicit `python bot.py`
 start-command override.
 
+Some hosted builders inject `OTEL_EXPORTER_*` variables that point to their own
+telemetry sockets. The Dockerfile clears those values around Tempo installation
+and its build-time smoke tests so they cannot be mistaken for Tempo endpoints.
+This safeguard is automatic; no Railway variable change is required.
+
 Pushes to `main` deploy automatically when the Railway service is connected to
 this GitHub repository. A manual deployment can be started with:
 
@@ -242,8 +247,11 @@ binary missing`, `Wallet keys missing`, or `Tempo command failed`.
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q -f .
 bash -n start.sh
-docker build --tag calbot:local .
+docker build --platform linux/amd64 --tag calbot:local .
 ```
+
+The explicit Docker platform matches Railway and GitHub Actions, including when
+the local machine is an Apple Silicon Mac.
 
 `requirements.lock` is compiled with uv 0.11.28 for Python 3.12. CI resolves the
 manifest under the checked-in lock constraints, then compares every pinned
@@ -262,17 +270,18 @@ retry prevention, and free task polling.
 
 | File | Purpose |
 |---|---|
-| `bot.py` | Telegram adapter, application factory, and scheduled summaries |
-| `bot_runtime.py` | Dependency-injected assistant runtime and side-effect executor |
-| `action_authorization.py` | Actor-bound, expiring, one-shot action approvals |
-| `calendar_client.py` | Google Calendar operations and Claude tool definitions |
-| `calendar_digest.py` | Direct calendar fetching and reliable scheduled summaries |
-| `assistant_tool_loop.py` | Claude tool execution and verified calendar confirmations |
-| `tempo_client.py` | Tempo wallet, service discovery, and MPP calls |
+| `calbot/telegram_app.py` | Telegram handlers, application factory, and scheduled summaries |
+| `calbot/runtime.py` | Dependency-injected assistant runtime and side-effect executor |
+| `calbot/authorization.py` | Actor-bound, expiring, one-shot action approvals |
+| `calbot/messages.py` | Telegram-to-model message boundaries and reply extraction |
+| `calbot/assistant/` | Model policy, tool execution, and response verification |
+| `calbot/calendar/` | Google Calendar operations and deterministic digests |
+| `calbot/tempo/` | Tempo discovery, payments, wallet, tools, and process isolation |
+| `bot.py` | Compatibility launcher for `python bot.py` host overrides |
 | `Dockerfile` | Railway/container image with Tempo installed |
 | `start.sh` | Startup validation and process launch |
 | `requirements.lock` | Fully resolved, hash-locked production dependencies |
-| `tests/test_tempo_client.py` | Tempo/MPP acceptance tests |
+| `tests/` | Unit, acceptance, policy, and container regression tests |
 | `SETUP.md` | Detailed first-time deployment guide |
 | `SECURITY.md` | Vulnerability-reporting and secret-handling policy |
 

@@ -32,9 +32,10 @@ from telegram.ext import (
     filters,
 )
 
+from assistant_tool_loop import run_assistant_turn
+from assistant_policy import TEMPO_ASSISTANT_POLICY
 from calendar_client import TOOLS as CALENDAR_TOOLS, CalendarClient
 from calendar_digest import create_calendar_digest
-from assistant_policy import TEMPO_ASSISTANT_POLICY
 from message_utils import build_user_turn, visible_reply_text
 from payment_approval import PendingPaymentApproval
 from tempo_client import TEMPO_TOOLS, TempoClient, TempoRequestBudget
@@ -83,8 +84,10 @@ You have the following capabilities — use whichever tools fit the request:
 
 CALENDAR
 - Add events when plans, reservations, appointments, or trips are mentioned. Infer sensible defaults (dinner = 2h, appointments = 1h). Resolve relative dates ("saturday", "next friday") against today.
+- create_event performs its own duplicate check. Do not call list_events solely to check for duplicates before creating an event.
 - Answer schedule questions by listing events first, then summarizing.
 - Update or delete events when asked. If ambiguous, list matches and ask which one.
+- Never claim a calendar action succeeded unless that mutation tool returned a successful result during the current turn. If create_event reports a duplicate, say the event is already on the calendar.
 
 {TEMPO_ASSISTANT_POLICY}
 
@@ -108,7 +111,10 @@ Style: conversational and direct. Confirm tool actions in one line. Plain text o
 
 
 def ask_claude(
-    chat_id: int, user_text: str, sender_display_name: str = ""
+    chat_id: int,
+    user_text: str,
+    sender_display_name: str = "",
+    request_id: str = "",
 ) -> str:
     pending = PENDING_TEMPO_APPROVALS.get(chat_id)
     approved_call = None
@@ -129,50 +135,34 @@ def ask_claude(
     HISTORY[chat_id].append(build_user_turn(user_text, sender_display_name))
     messages = list(HISTORY[chat_id])
 
-    for _ in range(MAX_TOOL_ROUNDS):
-        response = claude.messages.create(
-            model=MODEL,
-            max_tokens=2048,
-            system=system_prompt(approved_call),
-            tools=ALL_TOOLS,
-            messages=messages,
-        )
+    def run_tool(name: str, tool_args: dict) -> str:
+        if name.startswith("tempo_"):
+            output = tempo.run_tool(
+                name,
+                tool_args,
+                request_budget=request_budget,
+            )
+            approval = PendingPaymentApproval.from_tool_result(tool_args, output)
+            if approval:
+                PENDING_TEMPO_APPROVALS[chat_id] = approval
+            return output
+        if name == "create_event" and request_id:
+            tool_args = dict(tool_args)
+            tool_args["_idempotency_key"] = request_id
+        return cal.run_tool(name, tool_args)
 
-        if response.stop_reason != "tool_use":
-            text = "".join(b.text for b in response.content if b.type == "text").strip()
-            HISTORY[chat_id].append({"role": "assistant", "content": text or "…"})
-            return text
-
-        messages.append({"role": "assistant", "content": response.content})
-        results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                log.info("tool %s %s", block.name, block.input)
-                if block.name.startswith("tempo_"):
-                    tool_args = dict(block.input)
-                    output = tempo.run_tool(
-                        block.name,
-                        tool_args,
-                        request_budget=request_budget,
-                    )
-                    approval = PendingPaymentApproval.from_tool_result(
-                        tool_args, output
-                    )
-                    if approval:
-                        PENDING_TEMPO_APPROVALS[chat_id] = approval
-                else:
-                    output = cal.run_tool(block.name, dict(block.input))
-                log.info("tool %s result: %s", block.name, output[:200])
-                results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": output,
-                    }
-                )
-        messages.append({"role": "user", "content": results})
-
-    return "Sorry — that took too many steps. Try rephrasing?"
+    text = run_assistant_turn(
+        claude_client=claude,
+        model=MODEL,
+        system_prompt=system_prompt(approved_call),
+        tools=ALL_TOOLS,
+        messages=messages,
+        run_tool=run_tool,
+        max_tool_rounds=MAX_TOOL_ROUNDS,
+        logger=log,
+    )
+    HISTORY[chat_id].append({"role": "assistant", "content": text or "…"})
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +201,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg.chat_id,
             text,
             sender_display_name=sender_display_name,
+            request_id=f"telegram:{msg.chat_id}:{msg.message_id}",
         )
     except Exception:
         log.exception("Claude call failed")

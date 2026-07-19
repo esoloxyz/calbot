@@ -1,5 +1,7 @@
 """Safe boundaries between Telegram metadata and model-visible messages."""
 
+from __future__ import annotations
+
 
 def build_user_turn(message_text: str, sender_display_name: str = "") -> dict:
     """Build a Claude user turn without exposing mutable Telegram profile data.

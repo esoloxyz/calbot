@@ -181,6 +181,12 @@ revoke the key from the Tempo wallet.
 
 Calbot can also perform these actions through normal conversation.
 
+Calendar writes are verified before Calbot confirms them. Before creating an
+event, Calbot performs one bounded calendar lookup and treats an overlapping
+event with the same normalized title as already existing. Creates also use a
+deterministic Google Calendar event ID, which prevents concurrent retries from
+producing duplicates.
+
 ## Deploying
 
 The Docker image installs hash-locked Python dependencies, the SQLite runtime
@@ -204,7 +210,7 @@ binary missing`, `Wallet keys missing`, or `Tempo command failed`.
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m py_compile tempo_client.py bot.py calendar_client.py calendar_digest.py assistant_policy.py payment_approval.py
+python3 -m py_compile tempo_client.py bot.py calendar_client.py calendar_digest.py assistant_policy.py assistant_tool_loop.py payment_approval.py
 bash -n start.sh
 ```
 
@@ -220,6 +226,7 @@ retry prevention, and free task polling.
 | `bot.py` | Telegram handlers, Claude tool loop, and scheduled summaries |
 | `calendar_client.py` | Google Calendar operations and Claude tool definitions |
 | `calendar_digest.py` | Direct calendar fetching and reliable scheduled summaries |
+| `assistant_tool_loop.py` | Claude tool execution and verified calendar confirmations |
 | `tempo_client.py` | Tempo wallet, service discovery, and MPP calls |
 | `payment_approval.py` | Exact, expiring confirmations for higher-priced MPP calls |
 | `Dockerfile` | Railway/container image with Tempo installed |

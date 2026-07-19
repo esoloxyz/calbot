@@ -27,7 +27,9 @@ class PublicReleaseTests(unittest.TestCase):
         combined = (ROOT / "SETUP.md").read_text() + (ROOT / ".env.example").read_text()
 
         self.assertIsNone(
-            re.search(r"Ezra|Maya|girlfriend|for you two|private GitHub repo", combined, re.I)
+            re.search(
+                r"Ezra|Maya|girlfriend|for you two|private GitHub repo", combined, re.I
+            )
         )
 
     def test_example_telegram_token_is_blank(self):

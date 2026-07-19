@@ -1,25 +1,10 @@
-"""
-Personal Assistant Bot
-----------------------
-A Telegram bot powered by Claude with pluggable capabilities.
+"""Telegram adapter and application factory for Calbot."""
 
-Current capabilities:
-  - Google Calendar management
-  - Tempo / MPP stablecoin-powered API services
+from __future__ import annotations
 
-Talk to it in plain English:
-  "dinner at Lilia saturday 8pm"
-  "what do we have this weekend?"
-  "use Parallel to generate an image of a sunset"
-  "what's my Tempo wallet balance?"
-"""
-
-import json
 import logging
-import os
-from collections import defaultdict, deque
+import re
 from datetime import datetime, time, timedelta
-from zoneinfo import ZoneInfo
 
 import anthropic
 from telegram import Update
@@ -32,313 +17,363 @@ from telegram.ext import (
     filters,
 )
 
-from assistant_tool_loop import run_assistant_turn
-from assistant_policy import TEMPO_ASSISTANT_POLICY
+from bot_runtime import BlockingBridge, BotConfig, BotRuntime
 from calendar_client import TOOLS as CALENDAR_TOOLS, CalendarClient
 from calendar_digest import create_calendar_digest
-from message_utils import build_user_turn, visible_reply_text
-from payment_approval import PendingPaymentApproval
-from tempo_client import TEMPO_TOOLS, TempoClient, TempoRequestBudget
+from message_utils import visible_reply_text
+from tempo_client import TEMPO_TOOLS, TempoClient
 
-logging.basicConfig(
-    format="%(asctime)s %(name)s %(levelname)s %(message)s", level=logging.INFO
-)
-# httpx logs full Telegram API URLs, which contain the bot token.
-logging.getLogger("httpx").setLevel(logging.WARNING)
+
 log = logging.getLogger("assistant-bot")
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-ALLOWED_CHAT_ID = int(os.environ["ALLOWED_CHAT_ID"])
-TIMEZONE = os.environ.get("TIMEZONE", "America/New_York")
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-BOT_OWNER = os.environ.get("BOT_OWNER", os.environ.get("COUPLE_NAMES", "the user"))
-RESPOND_TO_ALL = os.environ.get("RESPOND_TO_ALL", "true").lower() == "true"
-
-TZ = ZoneInfo(TIMEZONE)
-
-claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-cal = CalendarClient()
-tempo = TempoClient()
-
-ALL_TOOLS = CALENDAR_TOOLS + TEMPO_TOOLS
-
-# Rolling conversation memory per chat (survives until process restart)
-HISTORY: dict[int, deque] = defaultdict(lambda: deque(maxlen=40))
-PENDING_TEMPO_APPROVALS: dict[int, PendingPaymentApproval] = {}
-
-MAX_TOOL_ROUNDS = 10
+_RUNTIME_KEY = "calbot_runtime"
+_CONFIG_KEY = "calbot_config"
+_BRIDGE_KEY = "calbot_blocking_bridge"
+TELEGRAM_CHUNK_CHARS = 2000
+ANONYMOUS_ADMIN_USER_ID = 1087968824
 
 
-def system_prompt(approved_call: dict = None) -> str:
-    now = datetime.now(TZ)
-    return f"""You are a personal AI assistant for {BOT_OWNER}, living in a private Telegram group.
+def telegram_chunks(text: str) -> list[str]:
+    """Split text below Telegram's UTF-16 limit without losing content."""
+    if not text:
+        return []
+    return [
+        text[index : index + TELEGRAM_CHUNK_CHARS]
+        for index in range(0, len(text), TELEGRAM_CHUNK_CHARS)
+    ]
 
-Current date/time: {now.strftime('%A, %B %d, %Y at %I:%M %p')} ({TIMEZONE}).
 
-You have the following capabilities — use whichever tools fit the request:
+async def _reply_in_chunks(message, text: str) -> None:
+    for chunk in telegram_chunks(text):
+        await message.reply_text(chunk)
 
-CALENDAR
-- Add events when plans, reservations, appointments, or trips are mentioned. Infer sensible defaults (dinner = 2h, appointments = 1h). Resolve relative dates ("saturday", "next friday") against today.
-- create_event performs its own duplicate check. Do not call list_events solely to check for duplicates before creating an event.
-- Answer schedule questions by listing events first, then summarizing.
-- Update or delete events when asked. If ambiguous, list matches and ask which one.
-- Never claim a calendar action succeeded unless that mutation tool returned a successful result during the current turn. If create_event reports a duplicate, say the event is already on the calendar.
 
-{TEMPO_ASSISTANT_POLICY}
+async def _send_in_chunks(bot, chat_id: int, text: str) -> None:
+    for chunk in telegram_chunks(text):
+        await bot.send_message(chat_id=chat_id, text=chunk)
 
-GENERAL
-- Answer questions, help think through problems, draft messages, do research, etc.
-- If a message is clearly not directed at you (just conversation between people), reply with exactly: PASS
 
-Style: conversational and direct. Confirm tool actions in one line. Plain text only, no markdown headers. Emoji sparingly.""" + (
-        "\n\nPAYMENT APPROVAL\n"
-        "The current user message approved exactly one previously blocked Tempo call. "
-        "Reissue that call with exactly these arguments; do not alter or add paid calls: "
-        + json.dumps(approved_call, sort_keys=True)
-        if approved_call
-        else ""
+def configure_logging() -> None:
+    logging.basicConfig(
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        level=logging.INFO,
     )
+    # httpx logs full Telegram API URLs, which contain the bot token.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-# ---------------------------------------------------------------------------
-# Claude tool-use loop
-# ---------------------------------------------------------------------------
-
-
-def ask_claude(
-    chat_id: int,
-    user_text: str,
-    sender_display_name: str = "",
-    request_id: str = "",
-) -> str:
-    pending = PENDING_TEMPO_APPROVALS.get(chat_id)
-    approved_call = None
-    approved_limit = ""
-    if pending and pending.expired():
-        PENDING_TEMPO_APPROVALS.pop(chat_id, None)
-        pending = None
-    if pending and pending.matches(user_text):
-        approved_call = pending.tool_args
-        approved_limit = pending.amount
-        PENDING_TEMPO_APPROVALS.pop(chat_id, None)
-
-    request_budget = TempoRequestBudget(
-        auto_limit=tempo.auto_spend,
-        approved_call=approved_call,
-        approved_limit=approved_limit,
+def create_runtime(config: BotConfig) -> BotRuntime:
+    """Build concrete API clients only after validated configuration is loaded."""
+    claude = anthropic.Anthropic(
+        api_key=config.anthropic_api_key,
+        timeout=30.0,
+        max_retries=2,
     )
-    HISTORY[chat_id].append(build_user_turn(user_text, sender_display_name))
-    messages = list(HISTORY[chat_id])
-
-    def run_tool(name: str, tool_args: dict) -> str:
-        if name.startswith("tempo_"):
-            output = tempo.run_tool(
-                name,
-                tool_args,
-                request_budget=request_budget,
-            )
-            approval = PendingPaymentApproval.from_tool_result(tool_args, output)
-            if approval:
-                PENDING_TEMPO_APPROVALS[chat_id] = approval
-            return output
-        if name == "create_event" and request_id:
-            tool_args = dict(tool_args)
-            tool_args["_idempotency_key"] = request_id
-        return cal.run_tool(name, tool_args)
-
-    text = run_assistant_turn(
+    calendar = CalendarClient(
+        service_account_json=config.google_service_account_json,
+        calendar_id=config.calendar_id,
+        timezone_name=config.timezone,
+    )
+    tempo = TempoClient(
+        bin_path=config.tempo_bin,
+        tempo_home=config.tempo_home,
+        max_spend=config.tempo_max_spend,
+        auto_spend=config.tempo_auto_spend,
+    )
+    tempo.prepare_wallet(config.tempo_wallet_store_b64, required=True)
+    return BotRuntime(
+        config=config,
         claude_client=claude,
-        model=MODEL,
-        system_prompt=system_prompt(approved_call),
-        tools=ALL_TOOLS,
-        messages=messages,
-        run_tool=run_tool,
-        max_tool_rounds=MAX_TOOL_ROUNDS,
-        logger=log,
+        calendar_client=calendar,
+        tempo_client=tempo,
+        tools=CALENDAR_TOOLS + TEMPO_TOOLS,
     )
-    HISTORY[chat_id].append({"role": "assistant", "content": text or "…"})
-    return text
 
 
-# ---------------------------------------------------------------------------
-# Telegram handlers
-# ---------------------------------------------------------------------------
+def _components(context: ContextTypes.DEFAULT_TYPE):
+    data = context.application.bot_data
+    return data[_RUNTIME_KEY], data[_CONFIG_KEY], data[_BRIDGE_KEY]
 
 
-def _authorized(update: Update) -> bool:
-    return update.effective_chat and update.effective_chat.id == ALLOWED_CHAT_ID
+def _authorized(update: Update, config: BotConfig) -> bool:
+    if not update.effective_chat or update.effective_chat.id != config.allowed_chat_id:
+        return False
+    if not update.effective_user:
+        return False
+    message = update.message
+    if (
+        message is not None and getattr(message, "sender_chat", None) is not None
+    ) or update.effective_user.id == ANONYMOUS_ADMIN_USER_ID:
+        # Telegram collapses anonymous admins onto one shared synthetic user ID;
+        # it cannot safely identify the actor for one-shot approvals.
+        return False
+    return config.actor_allowed(update.effective_user.id)
+
+
+async def _ask(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    *,
+    request_id: str = "",
+) -> str | None:
+    runtime, _, bridge = _components(context)
+    user = update.effective_user
+    if user is None:
+        return None
+    reply = await bridge.run(
+        runtime.ask,
+        chat_id=update.effective_chat.id,
+        user_id=user.id,
+        user_text=text,
+        sender_display_name=user.first_name or "",
+        request_id=request_id,
+    )
+    return visible_reply_text(reply)
 
 
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _authorized(update) or not update.message or not update.message.text:
+    _, config, _ = _components(context)
+    if not _authorized(update, config) or not update.message or not update.message.text:
         return
 
     msg = update.message
     text = msg.text.strip()
-
-    if not RESPOND_TO_ALL:
-        me = context.bot.username or ""
-        mentioned = f"@{me}".lower() in text.lower()
-        is_reply_to_bot = (
+    if not config.respond_to_all:
+        username = context.bot.username or ""
+        mention_pattern = (
+            re.compile(rf"(?<!\w)@{re.escape(username)}\b", re.IGNORECASE)
+            if username
+            else None
+        )
+        mentioned = bool(mention_pattern and mention_pattern.search(text))
+        is_reply_to_bot = bool(
             msg.reply_to_message
             and msg.reply_to_message.from_user
             and msg.reply_to_message.from_user.id == context.bot.id
         )
         if not (mentioned or is_reply_to_bot):
             return
-        text = text.replace(f"@{me}", "").strip()
+        if mention_pattern:
+            text = mention_pattern.sub("", text).strip()
+        if not text:
+            return
 
-    sender_display_name = msg.from_user.first_name if msg.from_user else ""
-    await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.TYPING)
-
+    await context.bot.send_chat_action(
+        chat_id=msg.chat_id,
+        action=ChatAction.TYPING,
+    )
     try:
-        reply = ask_claude(
-            msg.chat_id,
+        reply = await _ask(
+            update,
+            context,
             text,
-            sender_display_name=sender_display_name,
             request_id=f"telegram:{msg.chat_id}:{msg.message_id}",
         )
+        if reply:
+            await _reply_in_chunks(msg, reply)
     except Exception:
-        log.exception("Claude call failed")
+        log.exception("Assistant turn failed")
         await msg.reply_text("Hit an error — try again in a sec.")
-        return
-
-    reply = visible_reply_text(reply)
-    if reply:
-        await msg.reply_text(reply)
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _authorized(update):
+    _, config, _ = _components(context)
+    if not _authorized(update, config):
+        chat_id = update.effective_chat.id if update.effective_chat else "unknown"
         await update.message.reply_text(
-            f"This chat isn't authorized. Chat ID: {update.effective_chat.id}"
+            f"This chat or user isn't authorized. Chat ID: {chat_id}"
         )
         return
     await update.message.reply_text(
-        f"Hey {BOT_OWNER}! I'm your personal assistant. I can:\n\n"
-        "• Manage your calendar — \"dinner at Lilia saturday 8pm\"\n"
-        "• Use Tempo services — \"generate an image of a sunset\"\n"
+        f"Hey {config.bot_owner}! I'm your personal assistant. I can:\n\n"
+        '• Manage your calendar — "dinner at Lilia saturday 8pm"\n'
+        '• Use Tempo services — "generate an image of a sunset"\n'
         "• Answer questions and help with anything else\n\n"
+        "Calendar changes and payments require an exact one-shot approval.\n\n"
         "Commands: /weekend  /week  /today  /balance"
     )
 
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Chat ID: {update.effective_chat.id}")
+    if update.message and update.effective_chat:
+        await update.message.reply_text(f"Chat ID: {update.effective_chat.id}")
+
+
+async def _run_command_prompt(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    prompt: str,
+) -> None:
+    _, config, _ = _components(context)
+    if not _authorized(update, config):
+        return
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.TYPING,
+    )
+    try:
+        reply = await _ask(update, context, prompt)
+        if reply:
+            await _reply_in_chunks(update.message, reply)
+    except Exception:
+        log.exception("Command assistant turn failed")
+        await update.message.reply_text("Hit an error — try again in a sec.")
 
 
 async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _authorized(update):
+    runtime, config, bridge = _components(context)
+    if not _authorized(update, config):
         return
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    reply = ask_claude(update.effective_chat.id, "System: show my Tempo wallet balance.")
-    reply = visible_reply_text(reply)
-    if reply:
-        await update.message.reply_text(reply)
-
-
-def _digest_prompt(label: str, start: datetime, end: datetime) -> str:
-    return (
-        f"System task: post the {label}. Use list_events from "
-        f"{start.isoformat()} to {end.isoformat()}, then write a short, warm summary. "
-        f"If nothing is scheduled, say so cheerfully. Do not reply PASS."
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.TYPING,
     )
+    try:
+        reply = await bridge.run(runtime.wallet_balance_reply)
+        if reply:
+            await _reply_in_chunks(update.message, reply)
+    except Exception:
+        log.exception("Wallet balance command failed")
+        await update.message.reply_text(
+            "I couldn't load the Tempo wallet status. Please try again."
+        )
 
 
 def _weekend_window(now: datetime) -> tuple[datetime, datetime]:
-    days_to_friday = (4 - now.weekday()) % 7
+    # Monday-Thursday target the coming Friday; Friday-Sunday stay within the
+    # current weekend instead of jumping a full week ahead.
+    days_to_friday = 4 - now.weekday()
     friday = (now + timedelta(days=days_to_friday)).replace(
-        hour=0, minute=0, second=0, microsecond=0
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
     )
     return friday, friday + timedelta(days=3)
 
 
-async def cmd_weekend(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _authorized(update):
+async def _run_digest_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    label: str,
+    start: datetime,
+    end: datetime,
+) -> None:
+    runtime, config, bridge = _components(context)
+    if not _authorized(update, config):
         return
-    now = datetime.now(TZ)
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.TYPING,
+    )
+    try:
+        reply = await bridge.run(
+            create_calendar_digest,
+            calendar_client=runtime.cal,
+            label=label,
+            start=start,
+            end=end,
+            timezone=config.timezone,
+        )
+        await _reply_in_chunks(update.message, reply)
+    except Exception:
+        log.exception("Calendar digest command failed")
+        await update.message.reply_text(
+            f"I couldn't load your {label}. Please try again."
+        )
+
+
+async def cmd_weekend(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _, config, _ = _components(context)
+    now = datetime.now(config.tz)
     start, end = _weekend_window(now)
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    reply = ask_claude(update.effective_chat.id, _digest_prompt("weekend preview", start, end))
-    reply = visible_reply_text(reply)
-    if reply:
-        await update.message.reply_text(reply)
+    await _run_digest_command(
+        update,
+        context,
+        "weekend preview",
+        start,
+        end,
+    )
 
 
 async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _authorized(update):
-        return
-    now = datetime.now(TZ)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    reply = ask_claude(update.effective_chat.id, _digest_prompt("week-ahead summary", start, start + timedelta(days=7)))
-    reply = visible_reply_text(reply)
-    if reply:
-        await update.message.reply_text(reply)
+    _, config, _ = _components(context)
+    start = datetime.now(config.tz).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    await _run_digest_command(
+        update,
+        context,
+        "week-ahead summary",
+        start,
+        start + timedelta(days=7),
+    )
 
 
 async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _authorized(update):
-        return
-    now = datetime.now(TZ)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    reply = ask_claude(update.effective_chat.id, _digest_prompt("today summary", start, start + timedelta(days=1)))
-    reply = visible_reply_text(reply)
-    if reply:
-        await update.message.reply_text(reply)
-
-
-# ---------------------------------------------------------------------------
-# Scheduled digests
-# ---------------------------------------------------------------------------
+    _, config, _ = _components(context)
+    start = datetime.now(config.tz).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    await _run_digest_command(
+        update,
+        context,
+        "today summary",
+        start,
+        start + timedelta(days=1),
+    )
 
 
 async def scheduled_digest(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now(TZ)
+    runtime, config, bridge = _components(context)
+    now = datetime.now(config.tz)
     job_name = context.job.data
-
-    if job_name == "weekend" and now.weekday() == 4:  # Friday
+    if job_name == "weekend" and now.weekday() == 4:
         start, end = _weekend_window(now)
         label = "weekend preview"
-    elif job_name == "week_ahead" and now.weekday() == 6:  # Sunday
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    elif job_name == "week_ahead" and now.weekday() == 6:
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+            days=1
+        )
         end = start + timedelta(days=7)
         label = "week-ahead summary"
     else:
         return
 
     try:
-        reply = create_calendar_digest(
-            calendar_client=cal,
-            claude_client=claude,
-            model=MODEL,
+        reply = await bridge.run(
+            create_calendar_digest,
+            calendar_client=runtime.cal,
             label=label,
             start=start,
             end=end,
-            timezone=TIMEZONE,
+            timezone=config.timezone,
         )
-        await context.bot.send_message(chat_id=ALLOWED_CHAT_ID, text=reply)
+        await _send_in_chunks(context.bot, config.allowed_chat_id, reply)
     except Exception:
         log.exception("Scheduled digest failed")
         await context.bot.send_message(
-            chat_id=ALLOWED_CHAT_ID,
+            chat_id=config.allowed_chat_id,
             text=f"I couldn't load your {label}. Please try /week.",
         )
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-
-def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+def create_application(
+    config: BotConfig | None = None,
+    runtime: BotRuntime | None = None,
+) -> Application:
+    config = config or BotConfig.from_env()
+    runtime = runtime or create_runtime(config)
+    app = Application.builder().token(config.telegram_token).build()
+    app.bot_data[_RUNTIME_KEY] = runtime
+    app.bot_data[_CONFIG_KEY] = config
+    app.bot_data[_BRIDGE_KEY] = BlockingBridge()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("id", cmd_id))
@@ -348,9 +383,22 @@ def main():
     app.add_handler(CommandHandler("today", cmd_today))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
-    app.job_queue.run_daily(scheduled_digest, time=time(9, 0, tzinfo=TZ), data="weekend")
-    app.job_queue.run_daily(scheduled_digest, time=time(18, 0, tzinfo=TZ), data="week_ahead")
+    app.job_queue.run_daily(
+        scheduled_digest,
+        time=time(9, 0, tzinfo=config.tz),
+        data="weekend",
+    )
+    app.job_queue.run_daily(
+        scheduled_digest,
+        time=time(18, 0, tzinfo=config.tz),
+        data="week_ahead",
+    )
+    return app
 
+
+def main() -> None:
+    configure_logging()
+    app = create_application()
     log.info("Bot starting (polling)…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

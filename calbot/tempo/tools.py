@@ -1,6 +1,6 @@
 """Claude tool schemas for Tempo wallet and MPP operations."""
 
-from tempo_payments import MAX_MONEY_TEXT_CHARS
+from calbot.tempo.payments import MAX_MONEY_TEXT_CHARS
 
 
 TEMPO_TOOLS = [

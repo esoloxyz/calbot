@@ -8,7 +8,11 @@ import re
 import time
 from collections.abc import Callable
 
-from assistant_postconditions import (
+from calbot.assistant.execution import (
+    ToolExecutionResult as ToolExecutionResult,
+    _tool_outcome,
+)
+from calbot.assistant.postconditions import (
     CALENDAR_MUTATION_TOOLS,
     _CALENDAR_READ_INTENT,
     _CALENDAR_SUBJECT,
@@ -24,10 +28,6 @@ from assistant_postconditions import (
     calendar_action_reply,
     claims_calendar_success as claims_calendar_success,
     claims_unverified_side_effect_success,
-)
-from assistant_tool_execution import (
-    ToolExecutionResult as ToolExecutionResult,
-    _tool_outcome,
 )
 
 

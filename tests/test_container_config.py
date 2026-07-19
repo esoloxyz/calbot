@@ -141,9 +141,9 @@ class ContainerDependencyTests(unittest.TestCase):
         self.assertIn("ruff check .", workflow)
         self.assertIn("ruff format --check .", workflow)
         self.assertIn("osv-scanner", workflow)
-        self.assertIn("import bot, bot_runtime", workflow)
+        self.assertIn("import calbot.runtime, calbot.telegram_app", workflow)
         dockerfile = (ROOT / "Dockerfile").read_text()
-        self.assertIn("process_guard.py", dockerfile)
+        self.assertIn("calbot/tempo/process_guard.py", dockerfile)
         self.assertIn("MAX_TEMPO_REQUEST_DATA_MEMORY_BYTES", dockerfile)
         self.assertNotIn("402653184", dockerfile)
 

@@ -23,7 +23,7 @@ except ModuleNotFoundError:
     sys.modules.setdefault("googleapiclient", googleapiclient)
     sys.modules.setdefault("googleapiclient.discovery", google_discovery)
 
-from calendar_client import (
+from calbot.calendar.client import (
     CALENDAR_FIELD_LIMITS,
     CALENDAR_MUTATION_FIELDS,
     CALENDAR_REQUIRED_FIELDS,

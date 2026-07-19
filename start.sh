@@ -20,4 +20,4 @@ fi
 
 # Python performs the single wallet restore during application startup. Keeping
 # restoration there also supports hosts that override this container command.
-exec python bot.py
+exec python -m calbot

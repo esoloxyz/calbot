@@ -16,7 +16,7 @@ class PublicReleaseTests(unittest.TestCase):
             ROOT / ".env.example",
             ROOT / "README.md",
             ROOT / "start.sh",
-            ROOT / "tempo_client.py",
+            ROOT / "calbot" / "tempo" / "client.py",
         ]
         combined = "\n".join(path.read_text() for path in files)
 

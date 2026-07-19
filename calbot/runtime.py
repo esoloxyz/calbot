@@ -15,21 +15,21 @@ from decimal import Decimal, InvalidOperation
 from typing import Callable, Mapping, Optional
 from zoneinfo import ZoneInfo
 
-from action_authorization import PendingAction, PendingActionStore
-from assistant_policy import TEMPO_ASSISTANT_POLICY
-from assistant_tool_loop import (
+from calbot.assistant.loop import (
     CALENDAR_MUTATION_TOOLS,
     ToolExecutionResult,
     calendar_action_reply,
     run_assistant_turn,
 )
-from calendar_client import (
+from calbot.assistant.policy import TEMPO_ASSISTANT_POLICY
+from calbot.authorization import PendingAction, PendingActionStore
+from calbot.calendar.client import (
     CALENDAR_FIELD_LIMITS,
     CALENDAR_MUTATION_FIELDS,
     CALENDAR_REQUIRED_FIELDS,
 )
-from message_utils import build_user_turn
-from tempo_client import TempoRequestBudget, decimal_text
+from calbot.messages import build_user_turn
+from calbot.tempo.client import TempoRequestBudget, decimal_text
 
 
 log = logging.getLogger("assistant-bot")

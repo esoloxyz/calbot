@@ -3,7 +3,7 @@ import logging
 import unittest
 from types import SimpleNamespace
 
-from assistant_tool_loop import (
+from calbot.assistant.loop import (
     ToolExecutionResult,
     claims_calendar_success,
     claims_unverified_side_effect_success,

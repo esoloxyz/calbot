@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
-from bot import (
+from calbot.telegram_app import (
     _authorized,
     _run_digest_command,
     _weekend_window,
@@ -13,8 +13,8 @@ from bot import (
     scheduled_digest,
     telegram_chunks,
 )
-from bot_runtime import BotConfig
-from calendar_digest import create_calendar_digest
+from calbot.calendar.digest import create_calendar_digest
+from calbot.runtime import BotConfig
 
 
 class TelegramDeliveryTests(unittest.TestCase):
@@ -72,8 +72,13 @@ class MessageAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch("bot._components", return_value=(object(), self.config, object())),
-            patch("bot._ask", AsyncMock(return_value="response")) as ask,
+            patch(
+                "calbot.telegram_app._components",
+                return_value=(object(), self.config, object()),
+            ),
+            patch(
+                "calbot.telegram_app._ask", AsyncMock(return_value="response")
+            ) as ask,
         ):
             await on_message(update, context)
 
@@ -103,8 +108,11 @@ class MessageAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch("bot._components", return_value=(object(), self.config, object())),
-            patch("bot._ask", AsyncMock()) as ask,
+            patch(
+                "calbot.telegram_app._components",
+                return_value=(object(), self.config, object()),
+            ),
+            patch("calbot.telegram_app._ask", AsyncMock()) as ask,
         ):
             await on_message(update, context)
 
@@ -152,7 +160,9 @@ class DigestCommandTests(unittest.IsolatedAsyncioTestCase):
         )
         context = SimpleNamespace(bot=SimpleNamespace(send_chat_action=AsyncMock()))
 
-        with patch("bot._components", return_value=(runtime, config, bridge)):
+        with patch(
+            "calbot.telegram_app._components", return_value=(runtime, config, bridge)
+        ):
             await cmd_balance(update, context)
 
         self.assertIs(bridge.run.await_args.args[0], runtime.wallet_balance_reply)
@@ -179,7 +189,7 @@ class DigestCommandTests(unittest.IsolatedAsyncioTestCase):
         end = datetime(2026, 7, 19, tzinfo=config.tz)
 
         with patch(
-            "bot._components",
+            "calbot.telegram_app._components",
             return_value=(runtime, config, bridge),
         ):
             await _run_digest_command(
@@ -213,8 +223,11 @@ class DigestCommandTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch("bot._components", return_value=(runtime, config, bridge)),
-            patch("bot.datetime") as mocked_datetime,
+            patch(
+                "calbot.telegram_app._components",
+                return_value=(runtime, config, bridge),
+            ),
+            patch("calbot.telegram_app.datetime") as mocked_datetime,
         ):
             mocked_datetime.now.return_value = datetime(
                 2026, 7, 17, 9, 0, tzinfo=config.tz

@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Optional, Tuple
 from urllib.parse import urljoin, urlsplit
 
-from tempo_catalog import (
+from calbot.tempo.catalog import (
     MAX_DISCOVERED_SERVICES,
     MAX_SERVICE_ENDPOINTS,
     SAFE_DISCOVERY_WORDS,
@@ -18,7 +18,7 @@ from tempo_catalog import (
     _safe_public_https_url,
     _service_ids,
 )
-from tempo_payments import (
+from calbot.tempo.payments import (
     EndpointPayment,
     TempoCallPreview,
     TempoRequestBudget,
@@ -26,14 +26,14 @@ from tempo_payments import (
     _unknown_payment_submission,
     decimal_text,
 )
-from tempo_tools import TEMPO_TOOLS as TEMPO_TOOLS
-from tempo_process import (
+from calbot.tempo.process import (
     MAX_TEMPO_REQUEST_DATA_MEMORY_BYTES,
     ProcessOutputLimitExceeded,
     _run_process,
     _tempo_process_env,
 )
-from tempo_wallet import (
+from calbot.tempo.tools import TEMPO_TOOLS as TEMPO_TOOLS
+from calbot.tempo.wallet import (
     _validate_wallet_store,
     restore_wallet_credentials,
 )

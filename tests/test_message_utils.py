@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from message_utils import build_user_turn, visible_reply_text
+from calbot.messages import build_user_turn, visible_reply_text
 
 
 class TelegramMessageBoundaryTests(unittest.TestCase):

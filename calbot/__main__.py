@@ -1,4 +1,4 @@
-"""Compatibility launcher for hosts configured to run ``python bot.py``."""
+"""Run Calbot with ``python -m calbot``."""
 
 from calbot.telegram_app import main
 

@@ -1,5 +1,7 @@
 FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS builder
 
+ARG OTEL_EXPORTER_OTLP_ENDPOINT
+ARG OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
 ARG TEMPOUP_COMMIT=96cec1ee6735834d1674f282ef317b708ec6de53
 ARG TEMPOUP_SHA256=5a6e26630f804f226264f5da4553c3eb3cb7e15ec387c3392d7f6749422042d9
 ARG TEMPO_VERSION=v1.4.3
@@ -26,8 +28,11 @@ RUN /opt/venv/bin/python -m pip install --no-cache-dir --only-binary=:all: --req
 
 # tempoup is source-pinned and checksum-verified. It verifies the versioned Tempo
 # release before installing it; build-only download and GPG tools stay out of the
-# runtime image.
-RUN TEMPOUP="$(mktemp)" \
+# runtime image. Hosted builders can inject OTLP endpoints for their own
+# tracing; Tempo must not inherit those platform-specific Unix sockets.
+RUN unset OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_ENDPOINT \
+    OTEL_EXPORTER_OTLP_PROTOCOL OTEL_EXPORTER_OTLP_TRACES_PROTOCOL OTEL_TRACES_EXPORTER \
+    && TEMPOUP="$(mktemp)" \
     && curl -fsSL "https://raw.githubusercontent.com/tempoxyz/tempo/${TEMPOUP_COMMIT}/tempoup/tempoup" -o "$TEMPOUP" \
     && echo "${TEMPOUP_SHA256}  ${TEMPOUP}" | sha256sum -c - \
     && install -m 0755 "$TEMPOUP" /usr/local/bin/tempoup \
@@ -41,6 +46,9 @@ RUN TEMPOUP="$(mktemp)" \
     && /opt/tempo/bin/tempo-request --version
 
 FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+
+ARG OTEL_EXPORTER_OTLP_ENDPOINT
+ARG OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/home/calbot
@@ -70,7 +78,9 @@ WORKDIR /app
 COPY --chmod=0444 *.py ./
 COPY --chmod=0555 start.sh ./
 
-RUN sqlite3 --version \
+RUN unset OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_ENDPOINT \
+    OTEL_EXPORTER_OTLP_PROTOCOL OTEL_EXPORTER_OTLP_TRACES_PROTOCOL OTEL_TRACES_EXPORTER \
+    && sqlite3 --version \
     && python3 -c "import sqlite3; print(sqlite3.sqlite_version)" \
     && python3 -m py_compile /app/process_guard.py \
     && python3 /app/process_guard.py "$(python3 -c 'from tempo_process import MAX_TEMPO_REQUEST_DATA_MEMORY_BYTES; print(MAX_TEMPO_REQUEST_DATA_MEMORY_BYTES)')" /opt/tempo/bin/tempo-request --help >/dev/null \

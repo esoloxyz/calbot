@@ -5,11 +5,25 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    allow:
+      - dependency-type: direct
+    groups:
+      production-dependencies:
+        patterns:
+          - "*"
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
 
   - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly

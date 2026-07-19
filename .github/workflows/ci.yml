@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test and lock validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned lock compiler
+        shell: bash
+        run: |
+          printf '%s\n' \
+            'uv==0.11.28 --hash=sha256:49fe42df9f42056037473f3876adec1615709b57d3470ed39178ff420f3afb9f' \
+            > "${RUNNER_TEMP}/uv-requirement.txt"
+          python -m pip install \
+            --disable-pip-version-check \
+            --no-deps \
+            --only-binary=:all: \
+            --require-hashes \
+            -r "${RUNNER_TEMP}/uv-requirement.txt"
+
+      - name: Reject a stale production lock
+        shell: bash
+        run: |
+          cp requirements.lock "${RUNNER_TEMP}/requirements.constraints.lock"
+          uv pip compile \
+            --python-version 3.12 \
+            --constraint "${RUNNER_TEMP}/requirements.constraints.lock" \
+            --generate-hashes \
+            --no-emit-index-url \
+            --custom-compile-command 'uv 0.11.28: uv pip compile --python-version 3.12 --generate-hashes --no-emit-index-url requirements.txt -o requirements.lock' \
+            requirements.txt \
+            -o "${RUNNER_TEMP}/requirements.candidate.lock"
+
+          # Ignore resolver provenance comments while comparing every pinned
+          # version and artifact hash. Constraining with the checked-in lock
+          # prevents unrelated registry releases from making CI nondeterministic.
+          awk '!/^[[:space:]]*#/ && NF' requirements.lock \
+            > "${RUNNER_TEMP}/requirements.current.normalized"
+          awk '!/^[[:space:]]*#/ && NF' \
+            "${RUNNER_TEMP}/requirements.candidate.lock" \
+            > "${RUNNER_TEMP}/requirements.candidate.normalized"
+          diff -u \
+            "${RUNNER_TEMP}/requirements.current.normalized" \
+            "${RUNNER_TEMP}/requirements.candidate.normalized"
+
+      - name: Install hash-locked dependencies
+        run: >-
+          python -m pip install
+          --disable-pip-version-check
+          --only-binary=:all:
+          --require-hashes
+          -r requirements.lock
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Run pinned Ruff checks
+        shell: bash
+        run: |
+          printf '%s\n' \
+            'ruff==0.14.10 --hash=sha256:59aabd2e2c4fd614d2862e7939c34a532c04f1084476d6833dddef4afab87e9f' \
+            > "${RUNNER_TEMP}/ruff-requirement.txt"
+          python -m pip install \
+            --disable-pip-version-check \
+            --no-deps \
+            --only-binary=:all: \
+            --require-hashes \
+            -r "${RUNNER_TEMP}/ruff-requirement.txt"
+          ruff check .
+          ruff format --check .
+
+      - name: Scan locked dependencies with OSV
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error \
+            --output "${RUNNER_TEMP}/osv-scanner" \
+            https://github.com/google/osv-scanner/releases/download/v2.3.8/osv-scanner_linux_amd64
+          printf '%s  %s\n' \
+            'bc98e15319ed0d515e3f9235287ba53cdc5535d576d24fd573978ecfe9ab92dc' \
+            "${RUNNER_TEMP}/osv-scanner" | sha256sum --check --strict
+          chmod 0555 "${RUNNER_TEMP}/osv-scanner"
+          cp requirements.lock "${RUNNER_TEMP}/requirements.txt"
+          "${RUNNER_TEMP}/osv-scanner" scan source \
+            --lockfile "${RUNNER_TEMP}/requirements.txt" \
+            --experimental-flag-deprecated-packages
+
+      - name: Compile Python sources
+        run: python -m compileall -q -f .
+
+      - name: Check shell syntax
+        run: bash -n start.sh
+
+  container:
+    name: Container build and smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        run: docker build --tag calbot:ci .
+
+      - name: Verify unprivileged runtime
+        shell: bash
+        run: |
+          docker run --rm --network none --entrypoint sh calbot:ci -ceu '
+            test "$(id -u)" = "10001"
+            test "$HOME" = "/home/calbot"
+            test "$TEMPO_BIN" = "/opt/tempo/bin/tempo"
+            test "$TEMPO_HOME" = "/opt/tempo"
+            test -x "$TEMPO_BIN"
+            test ! -w "$TEMPO_BIN"
+            test ! -w "$(dirname "$TEMPO_BIN")"
+            test -x /opt/tempo/bin/tempo-wallet
+            test -x /opt/tempo/bin/tempo-request
+            test ! -w /opt/tempo/bin/tempo-wallet
+            test ! -w /opt/tempo/bin/tempo-request
+            test -w "$HOME/.tempo/wallet"
+            python -c "import bot, bot_runtime, process_guard, sqlite3, telegram; print(sqlite3.sqlite_version, telegram.__version__)"
+            "$TEMPO_BIN" --version
+            "$TEMPO_BIN" wallet --version
+            "$TEMPO_BIN" request --version
+          '

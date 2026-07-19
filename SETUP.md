@@ -35,6 +35,8 @@ on-demand summaries.
 3. Add the bot to a private chat or group containing only the intended users.
 4. After deployment, send `/id` to Calbot and copy the returned chat ID. Use it
    as `ALLOWED_CHAT_ID`; Calbot ignores every other chat.
+5. Optionally set `ALLOWED_USER_IDS` to a comma-separated list of Telegram user
+   IDs when only selected members of the group should control Calbot.
 
 ## 3. Create a Google Cloud service account
 
@@ -53,11 +55,46 @@ on-demand summaries.
 Use a dedicated, low-balance wallet or a limited access key. The wallet store is
 a signing credential and must be handled like a password.
 
+Install the same Tempo CLI release used by the container. The installer source
+is pinned to a Git commit and verified before it runs; `tempoup` then verifies
+the versioned Tempo release. Install `curl` and GPG first (or authenticate the
+GitHub CLI so `tempoup` can verify the release attestation):
+
 ```bash
-curl -fsSL https://tempo.xyz/install | bash
-"$HOME/.tempo/bin/tempo" wallet login
-"$HOME/.tempo/bin/tempo" wallet whoami --format json
+TEMPOUP_COMMIT=96cec1ee6735834d1674f282ef317b708ec6de53
+TEMPOUP_SHA256=5a6e26630f804f226264f5da4553c3eb3cb7e15ec387c3392d7f6749422042d9
+TEMPO_VERSION=v1.4.3
+TEMPO_WALLET_VERSION=v0.6.7
+TEMPO_REQUEST_VERSION=v0.6.5
+TEMPOUP_FILE="$(mktemp)"
+trap 'rm -f "$TEMPOUP_FILE"' EXIT
+
+curl -fsSL \
+  "https://raw.githubusercontent.com/tempoxyz/tempo/${TEMPOUP_COMMIT}/tempoup/tempoup" \
+  -o "$TEMPOUP_FILE"
+python3 - "$TEMPOUP_SHA256" "$TEMPOUP_FILE" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+expected, path = sys.argv[1:]
+actual = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+if actual != expected:
+    raise SystemExit(f"checksum mismatch: {actual}")
+PY
+chmod 0700 "$TEMPOUP_FILE"
+TEMPO_BIN_DIR="$HOME/.tempo/bin" "$TEMPOUP_FILE" --install "$TEMPO_VERSION"
+TEMPO_HOME="$HOME/.tempo" "$HOME/.tempo/bin/tempo" add wallet "$TEMPO_WALLET_VERSION"
+TEMPO_HOME="$HOME/.tempo" "$HOME/.tempo/bin/tempo" add request "$TEMPO_REQUEST_VERSION"
+"$HOME/.tempo/bin/tempo-wallet" --version
+"$HOME/.tempo/bin/tempo-request" --version
+
+TEMPO_HOME="$HOME/.tempo" "$HOME/.tempo/bin/tempo" wallet login
+TEMPO_HOME="$HOME/.tempo" "$HOME/.tempo/bin/tempo" wallet whoami --format json
 ```
+
+Keep these pins aligned with the corresponding build arguments in
+[`Dockerfile`](Dockerfile).
 
 Encode the current wallet store for your deployment platform:
 
@@ -66,7 +103,8 @@ base64 < "$HOME/.tempo/wallet/store.json"
 ```
 
 Save the output as the secret `TEMPO_WALLET_STORE_B64`. Start with conservative
-limits such as `TEMPO_AUTO_SPEND=0.01` and `TEMPO_MAX_SPEND=0.50`. The access
+limits such as `TEMPO_AUTO_SPEND=0.01` and `TEMPO_MAX_SPEND=0.50`. Spend values
+support at most six decimal places, matching the pinned request CLI. The access
 key's wallet-level spending limit is an additional safeguard.
 
 ## 5. Deploy
@@ -77,6 +115,7 @@ key's wallet-level spending limit is an additional safeguard.
 3. Add the variables from [.env.example](.env.example):
    - `TELEGRAM_BOT_TOKEN`
    - `ALLOWED_CHAT_ID` (use `0` until you can run `/id`)
+   - `ALLOWED_USER_IDS` when you want per-user restrictions inside the chat
    - `ANTHROPIC_API_KEY`
    - `GOOGLE_SERVICE_ACCOUNT_JSON` (the complete downloaded JSON document)
    - `CALENDAR_ID`
@@ -93,16 +132,22 @@ key's wallet-level spending limit is an additional safeguard.
 
 ```text
 User: Dinner at Lilia Saturday at 8
-Bot:  Added ✓ Dinner at Lilia — Sat, Jul 11, 8:00 PM
+Bot:  Calendar change awaiting approval: add Dinner at Lilia starting Saturday at 8.
+      Reply exactly: approve A1B2C3
+User: approve A1B2C3
+Bot:  Done — Dinner at Lilia is on the calendar.
 
 Another user: I have an appointment Tuesday at 4
-Bot:          Added ✓ Appointment — Tue, Jul 14, 4:00 PM
+Bot:          Calendar change awaiting approval: add Appointment starting Tuesday at 4.
+              Reply exactly: approve D4E5F6
 
 User: /weekend
 Bot:  Your weekend: Saturday — Dinner at Lilia at 8 PM. Sunday is open.
 ```
 
 Calendar events appear in every account with which the calendar is shared.
+Approval tokens expire after ten minutes, are bound to the initiating Telegram
+user, and are cancelled by that user's next unrelated message.
 
 ## Operational notes
 

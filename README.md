@@ -21,6 +21,7 @@ Examples:
 - Discovers MPP services at runtime instead of hard-coding providers.
 - Pays for approved service calls from a Tempo wallet.
 - Restricts access to one configured Telegram chat.
+- Optionally restricts access to specific Telegram user IDs within that chat.
 - Keeps short, in-memory conversation history per chat.
 
 ## How it works
@@ -45,10 +46,24 @@ Claude tool-use loop
            paid API response
 ```
 
-For paid calls, Claude first searches the Tempo service directory, loads the
-selected service's exact endpoint metadata, and then calls that endpoint through
-`tempo request`. The Tempo CLI handles the MPP challenge, payment signature, and
-retry. Calbot rejects guessed endpoints and HTTP methods.
+For paid calls, Claude first searches the Tempo service directory and loads the
+selected service's exact endpoint metadata. Calbot validates and prices the call
+without submitting it, then asks the initiating Telegram user to approve an
+exact one-shot action. Only that stored call can reach `tempo request`. The Tempo
+CLI handles the MPP challenge and payment signature. Calbot rejects guessed
+endpoints and HTTP methods.
+
+### Code layout
+
+- `bot.py` is the Telegram adapter; `bot_runtime.py` owns application state and approvals.
+- `assistant_tool_loop.py` orchestrates model/tool rounds, while
+  `assistant_postconditions.py` and `assistant_tool_execution.py` enforce
+  executor-owned replies and typed tool boundaries.
+- `tempo_client.py` orchestrates Tempo calls and preserves the public facade.
+  Process isolation, wallet validation, payment authorization, catalog
+  validation, and tool schemas live in the corresponding `tempo_*` modules.
+- `calendar_client.py` owns Google Calendar validation and mutations;
+  `calendar_digest.py` renders deterministic summaries.
 
 ## Setup
 
@@ -72,13 +87,9 @@ source .venv/bin/activate
 pip install --require-hashes -r requirements.lock
 ```
 
-Install and authenticate the Tempo CLI:
-
-```bash
-curl -fsSL https://tempo.xyz/install | bash
-"$HOME/.tempo/bin/tempo" wallet login
-"$HOME/.tempo/bin/tempo" wallet whoami --format json
-```
+Install the Tempo CLI with the pinned, checksum-verified procedure in
+[SETUP.md](SETUP.md#4-prepare-a-tempo-wallet-for-mpp), then authenticate the
+dedicated Calbot wallet.
 
 Set the required environment variables, then start Calbot:
 
@@ -94,14 +105,16 @@ See [.env.example](.env.example) for sample values.
 |---|---:|---|
 | `TELEGRAM_BOT_TOKEN` | Yes | Token issued by BotFather |
 | `ALLOWED_CHAT_ID` | Yes | Only this Telegram chat can use the bot |
+| `ALLOWED_USER_IDS` | No | Comma-separated Telegram user IDs allowed within the configured chat |
 | `ANTHROPIC_API_KEY` | Yes | Claude API authentication |
 | `ANTHROPIC_MODEL` | No | Claude model; defaults to `claude-sonnet-4-6` |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Yes | Google service-account JSON on one line |
 | `CALENDAR_ID` | Yes | Calendar the bot can manage |
 | `TEMPO_WALLET_STORE_B64` | Yes | Base64-encoded current Tempo wallet store |
-| `TEMPO_AUTO_SPEND` | No | Cumulative automatic budget per Telegram message; defaults to `0.01` |
-| `TEMPO_MAX_SPEND` | No | Absolute ceiling for an explicitly approved call; defaults to `0.50` |
+| `TEMPO_AUTO_SPEND` | No | Default spend cap when a tool omits one; use at most 6 decimal places; approval is still required |
+| `TEMPO_MAX_SPEND` | No | Absolute ceiling for an explicitly approved call; at most 6 decimal places; defaults to `0.50` |
 | `TEMPO_BIN` | No | Tempo binary path; defaults to `~/.tempo/bin/tempo` |
+| `TEMPO_HOME` | No | Tempo launcher/extension home; does not relocate wallet-cli's `~/.tempo/wallet` store |
 | `TIMEZONE` | No | IANA timezone; defaults to `America/New_York` |
 | `BOT_OWNER` | No | Name used in the assistant prompt |
 | `RESPOND_TO_ALL` | No | Set `false` to require mentions or replies |
@@ -136,27 +149,36 @@ Calbot applies several controls before a paid request:
 1. The service must come from Tempo's live service directory.
 2. Calbot must load the service details before calling it.
 3. The URL and HTTP method must exactly match a discovered endpoint.
-4. Fixed-price calls up to `TEMPO_AUTO_SPEND` can run automatically; the default
-   cumulative budget is `$0.01` per Telegram message.
-5. Dynamic-price calls and calls above the automatic budget require a
-   short-lived confirmation. Natural replies such as `approve`, `yes`,
-   `confirm`, or `approve $0.10` are accepted for the one pending call.
-6. Approval is bound to the exact URL, method, body, and spend cap and unlocks
-   only one paid submission.
-7. A paid submission is never retried automatically, even when its response is
+4. Calbot validates and prices a call without submitting payment.
+5. Every new service call requires a short-lived, unpredictable approval token.
+   Paid calls include the exact price or dynamic-price ceiling, such as
+   `approve A1B2C3 $0.003`; zero-cost reads require approval too. Only a status
+   poll derived from a previously approved task can run without another prompt.
+   Generic replies such as `yes`, `approve`, or `do it` are rejected.
+6. Approval is bound to the initiating `(chat ID, user ID)` and the exact URL,
+   method, body, and spend cap. It is consumed before one direct submission; an
+   unrelated message from that user cancels it. The prompt displays every
+   material field in full; requests that cannot fit safely are rejected rather
+   than showing a partial preview.
+7. A different paid call is blocked while confirmation is pending or during an
+   approved turn, even when it is below `TEMPO_AUTO_SPEND`.
+8. A paid submission is never retried automatically, even when its response is
    lost or reports an error.
-8. A caller cannot raise the configured `TEMPO_MAX_SPEND` ceiling or silently
+9. A caller cannot raise the configured `TEMPO_MAX_SPEND` ceiling or silently
    raise a lower caller-provided cap to match a service price.
-9. Parallel task calls require a valid `input` and an explicit `pro` or `ultra`
-   processor before payment; returned task IDs authorize only their exact free
-   status-polling URL.
-10. CLI failures are returned as structured errors instead of looking successful.
+10. Service-directory searches accept only bounded capability keywords, service
+    IDs must have appeared in a search result, and endpoint metadata is accepted
+    only for public HTTPS URLs. Refreshes atomically evict stale endpoints.
+11. Parallel task calls require a valid `input` and an explicit `pro` or `ultra`
+    processor before payment; returned task IDs authorize only their exact,
+    zero-spend status URL. A user can restore polling after a restart by sending
+    the exact run ID back to the bot.
+12. CLI failures are returned as structured errors instead of looking successful.
 
 For ordinary web research, Calbot prefers Parallel's fixed-price `$0.01` search
 endpoint. If deeper research needs a `$0.10` `pro` task or `$0.30` `ultra` task,
-Calbot first states the price, asks for approval, and stops until it receives a
-clear confirmation. A reply containing a different amount or a negation is
-rejected.
+Calbot states the price and exact approval phrase, then stops. The same rule
+applies to fixed-price calls, including ordinary search and image generation.
 
 For ordinary image generation, Calbot prefers fal.ai's FLUX Schnell endpoint,
 which uses a fixed one-time `$0.003` MPP charge. The OpenAI DALL-E MPP endpoint
@@ -181,20 +203,28 @@ revoke the key from the Tempo wallet.
 
 Calbot can also perform these actions through normal conversation.
 
-Calendar writes are verified before Calbot confirms them. Before creating an
-event, Calbot performs one bounded calendar lookup and treats an overlapping
+Every calendar write is proposed first and executes only after the initiating
+user sends its exact one-shot approval token. The stored tool name and arguments
+execute directly without asking the model to reconstruct them. Before creating
+an event, Calbot performs a paginated calendar lookup and treats an overlapping
 event with the same normalized title as already existing. Creates also use a
-deterministic Google Calendar event ID, which prevents concurrent retries from
-producing duplicates.
+deterministic Google Calendar event ID scoped by both Telegram message and event
+identity, preventing retries and multi-event messages from colliding.
 
 ## Deploying
 
-The Docker image installs hash-locked Python dependencies, the SQLite runtime
-required by Tempo's payment extension, and a version-pinned, GPG-verified Tempo
-CLI. The Ubuntu base image is pinned to an immutable digest. The
-wallet key is restored from `TEMPO_WALLET_STORE_B64` at startup or import time, so
-the app works whether Railway uses the Docker `CMD` or an explicit `python
-bot.py` start-command override.
+The multi-stage Docker image installs hash-locked, wheel-only Python
+dependencies, the SQLite runtime required by Tempo, and a version-pinned,
+GPG-verified Tempo core. Its wallet and request extensions are separately
+version-pinned and verified by Tempo's signed-manifest installer during the
+build. All three executables are root-owned and read-only; CI exercises the two
+extensions with networking disabled so first-use downloads cannot hide a
+missing build artifact. The Ubuntu base image is pinned to an immutable digest;
+build/download tooling is excluded from the runtime, which runs as the
+unprivileged `calbot` user. The wallet key is restored once from
+`TEMPO_WALLET_STORE_B64` during Python application startup, so the app works
+whether Railway uses the Docker `CMD` or an explicit `python bot.py`
+start-command override.
 
 Pushes to `main` deploy automatically when the Railway service is connected to
 this GitHub repository. A manual deployment can be started with:
@@ -210,9 +240,18 @@ binary missing`, `Wallet keys missing`, or `Tempo command failed`.
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m py_compile tempo_client.py bot.py calendar_client.py calendar_digest.py assistant_policy.py assistant_tool_loop.py payment_approval.py
+python3 -m compileall -q -f .
 bash -n start.sh
+docker build --tag calbot:local .
 ```
+
+`requirements.lock` is compiled with uv 0.11.28 for Python 3.12. CI resolves the
+manifest under the checked-in lock constraints, then compares every pinned
+version and artifact hash. This rejects manifest-only dependency updates,
+including incomplete Dependabot pull requests, without failing merely because a
+new transitive release appeared after the lock was generated. CI also runs
+pinned Ruff checks, scans the exact lock with a checksum-verified OSV-Scanner,
+compiles the sources, and smoke-tests the unprivileged container offline.
 
 The acceptance tests cover current Tempo CLI argument order, service discovery,
 endpoint authorization, structured failures, fixed and dynamic pricing,
@@ -223,14 +262,15 @@ retry prevention, and free task polling.
 
 | File | Purpose |
 |---|---|
-| `bot.py` | Telegram handlers, Claude tool loop, and scheduled summaries |
+| `bot.py` | Telegram adapter, application factory, and scheduled summaries |
+| `bot_runtime.py` | Dependency-injected assistant runtime and side-effect executor |
+| `action_authorization.py` | Actor-bound, expiring, one-shot action approvals |
 | `calendar_client.py` | Google Calendar operations and Claude tool definitions |
 | `calendar_digest.py` | Direct calendar fetching and reliable scheduled summaries |
 | `assistant_tool_loop.py` | Claude tool execution and verified calendar confirmations |
 | `tempo_client.py` | Tempo wallet, service discovery, and MPP calls |
-| `payment_approval.py` | Exact, expiring confirmations for higher-priced MPP calls |
 | `Dockerfile` | Railway/container image with Tempo installed |
-| `start.sh` | Wallet restoration and process startup |
+| `start.sh` | Startup validation and process launch |
 | `requirements.lock` | Fully resolved, hash-locked production dependencies |
 | `tests/test_tempo_client.py` | Tempo/MPP acceptance tests |
 | `SETUP.md` | Detailed first-time deployment guide |
@@ -240,12 +280,14 @@ retry prevention, and free task polling.
 
 - Never commit `.env`, Google credentials, Telegram tokens, or Tempo keys.
 - Keep the bot in a private chat and configure `ALLOWED_CHAT_ID`.
+- Set `ALLOWED_USER_IDS` when only particular members of the chat should be able
+  to initiate calendar writes or payments.
 - Rotate the Telegram token if it appears in logs or screenshots.
 - Keep HTTP client logging at warning level; Telegram API URLs contain the token.
 - Keep mutable Telegram display names out of model-visible message content.
 - Use the smallest practical Tempo wallet balance and access-key allowance.
-- Keep `TEMPO_AUTO_SPEND` at the smallest fixed price you are comfortable
-  allowing without confirmation.
+- Keep `TEMPO_AUTO_SPEND` and `TEMPO_MAX_SPEND` conservative; they are additional
+  caps and do not replace one-shot confirmation.
 - Review dynamic-price endpoints before raising `TEMPO_MAX_SPEND`.
 
 Please report vulnerabilities privately rather than opening a public issue. See

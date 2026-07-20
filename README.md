@@ -20,6 +20,9 @@ Examples:
 - Fetches scheduled digests directly from Google Calendar, independent of chat history.
 - Discovers MPP services at runtime instead of hard-coding providers.
 - Pays for approved service calls from a Tempo wallet.
+- Turns Tempo and web-search results into plain-English Telegram replies instead
+  of exposing provider JSON or HTTP call data.
+- Lists every registry-known Tempo stablecoin balance above `$0.50`.
 - Restricts access to one configured Telegram chat.
 - Optionally restricts access to specific Telegram user IDs within that chat.
 - Keeps short, in-memory conversation history per chat.
@@ -49,9 +52,21 @@ Claude tool-use loop
 For paid calls, Claude first searches the Tempo service directory and loads the
 selected service's exact endpoint metadata. Calbot validates and prices the call
 without submitting it, then asks the initiating Telegram user to approve an
-exact one-shot action. Only that stored call can reach `tempo request`. The Tempo
-CLI handles the MPP challenge and payment signature. Calbot rejects guessed
-endpoints and HTTP methods.
+exact one-shot action by replying `approve`. Only that actor can approve, and
+only the internally stored call can reach `tempo request`. The Tempo CLI handles
+the MPP challenge and payment signature. Calbot rejects guessed endpoints and
+HTTP methods.
+
+Approved provider output is never inserted into conversational history. Search
+results are reduced to useful titles, excerpts, and source links, then answered
+in a separate tool-free model turn with a deterministic plain-text fallback.
+This keeps web content from authorizing tools while avoiding raw provider data
+in Telegram.
+
+For `/balance`, Calbot reads the wallet identity through the Tempo CLI, loads
+Tempo's official token list for that chain, and makes read-only `balanceOf` RPC
+calls. It displays stablecoin balances strictly above `$0.50` and falls back to
+the CLI's active balance if the registry or RPC is unavailable.
 
 ### Code layout
 
@@ -60,7 +75,8 @@ endpoints and HTTP methods.
 - `calbot/assistant/` contains model policy, tool-round orchestration, typed tool
   execution, and response postconditions.
 - `calbot/tempo/` contains the Tempo facade, catalog validation, payment policy,
-  subprocess isolation, tool schemas, and wallet validation.
+  read-only balance discovery, plain-text rendering, subprocess isolation, tool
+  schemas, and wallet validation.
 - `calbot/calendar/` contains Google Calendar validation, mutations, and
   deterministic digest rendering.
 - The root `bot.py` is only a compatibility launcher for existing host overrides.
@@ -115,6 +131,7 @@ See [.env.example](.env.example) for sample values.
 | `TEMPO_MAX_SPEND` | No | Absolute ceiling for an explicitly approved call; at most 6 decimal places; defaults to `0.50` |
 | `TEMPO_BIN` | No | Tempo binary path; defaults to `~/.tempo/bin/tempo` |
 | `TEMPO_HOME` | No | Tempo launcher/extension home; does not relocate wallet-cli's `~/.tempo/wallet` store |
+| `TEMPO_RPC_URL` | No | Optional HTTPS RPC override for all-token balance reads; known Tempo networks use their official public RPC by default |
 | `TIMEZONE` | No | IANA timezone; defaults to `America/New_York` |
 | `BOT_OWNER` | No | Name used in the assistant prompt |
 | `RESPOND_TO_ALL` | No | Set `false` to require mentions or replies |
@@ -150,16 +167,16 @@ Calbot applies several controls before a paid request:
 2. Calbot must load the service details before calling it.
 3. The URL and HTTP method must exactly match a discovered endpoint.
 4. Calbot validates and prices a call without submitting payment.
-5. Every new service call requires a short-lived, unpredictable approval token.
-   Paid calls include the exact price or dynamic-price ceiling, such as
-   `approve A1B2C3 $0.003`; zero-cost reads require approval too. Only a status
-   poll derived from a previously approved task can run without another prompt.
-   Generic replies such as `yes`, `approve`, or `do it` are rejected.
+5. Every new service call requires the initiating user to reply `approve` within
+   ten minutes. The approval is actor-bound, one-shot, and consumed before the
+   call runs. Replies such as `yes`, `approve please`, or `do it` are rejected.
+   Zero-cost external reads require approval too. Only a status poll derived
+   from a previously approved task can run without another prompt.
 6. Approval is bound to the initiating `(chat ID, user ID)` and the exact URL,
    method, body, and spend cap. It is consumed before one direct submission; an
-   unrelated message from that user cancels it. The prompt displays every
-   material field in full; requests that cannot fit safely are rejected rather
-   than showing a partial preview.
+   unrelated message from that user cancels it. The prompt shows the provider,
+   human-readable request, and exact price or maximum price without exposing
+   raw URL, method, body, or JSON. Oversized requests are rejected.
 7. A different paid call is blocked while confirmation is pending or during an
    approved turn, even when it is below `TEMPO_AUTO_SPEND`.
 8. A paid submission is never retried automatically, even when its response is
@@ -177,8 +194,9 @@ Calbot applies several controls before a paid request:
 
 For ordinary web research, Calbot prefers Parallel's fixed-price `$0.01` search
 endpoint. If deeper research needs a `$0.10` `pro` task or `$0.30` `ultra` task,
-Calbot states the price and exact approval phrase, then stops. The same rule
-applies to fixed-price calls, including ordinary search and image generation.
+Calbot states the price and asks for approval, then stops. The same rule applies
+to fixed-price calls, including ordinary search and image generation; the reply
+is always simply `approve`.
 
 For ordinary image generation, Calbot prefers fal.ai's FLUX Schnell endpoint,
 which uses a fixed one-time `$0.003` MPP charge. The OpenAI DALL-E MPP endpoint
@@ -199,13 +217,13 @@ revoke the key from the Tempo wallet.
 | `/today` | Summarize today's calendar |
 | `/week` | Summarize the next seven days |
 | `/weekend` | Summarize Friday through Sunday |
-| `/balance` | Show the deployed Tempo wallet status |
+| `/balance` | List every Tempo stablecoin balance above `$0.50` |
 
 Calbot can also perform these actions through normal conversation.
 
 Every calendar write is proposed first and executes only after the initiating
-user sends its exact one-shot approval token. The stored tool name and arguments
-execute directly without asking the model to reconstruct them. Before creating
+user replies `approve`. The stored tool name and arguments execute directly
+without asking the model to reconstruct them. Before creating
 an event, Calbot performs a paginated calendar lookup and treats an overlapping
 event with the same normalized title as already existing. Creates also use a
 deterministic Google Calendar event ID scoped by both Telegram message and event

@@ -7,7 +7,7 @@ from calbot.authorization import PendingActionStore
 class PendingActionStoreTests(unittest.TestCase):
     def setUp(self):
         self.now = datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)
-        self.store = PendingActionStore(token_factory=lambda: "P7K4M2")
+        self.store = PendingActionStore()
         self.actor = (-100123, 101)
 
     def test_exact_calendar_approval_is_one_shot(self):
@@ -29,7 +29,7 @@ class PendingActionStoreTests(unittest.TestCase):
         self.assertEqual(approved.tool_args, {"event_id": "victim-event"})
         self.assertIsNone(replay)
 
-    def test_payment_approval_requires_token_and_exact_sub_cent_amount(self):
+    def test_payment_approval_requires_only_the_word_approve(self):
         pending = self.store.propose(
             actor=self.actor,
             tool_name="tempo_call_service",
@@ -38,17 +38,17 @@ class PendingActionStoreTests(unittest.TestCase):
             now=self.now,
         )
 
-        self.assertEqual(pending.confirmation_prompt, "approve P7K4M2 $0.003")
+        self.assertEqual(pending.confirmation_prompt, "approve")
         for reply in (
             "yes",
-            "approve",
             "approve $0.003",
             "approve P7K4M2 $0.01",
             "approve WRONG1 $0.003",
+            "approve please",
         ):
             with self.subTest(reply=reply):
                 self.assertFalse(pending.matches(reply, now=self.now))
-        self.assertTrue(pending.matches("APPROVE P7K4M2 $0.003", now=self.now))
+        self.assertTrue(pending.matches("APPROVE", now=self.now))
 
     def test_zero_spend_ceiling_is_preserved_without_changing_reply_phrase(self):
         pending = self.store.propose(
@@ -60,7 +60,7 @@ class PendingActionStoreTests(unittest.TestCase):
         )
 
         self.assertEqual(pending.spend_limit, "0.00")
-        self.assertEqual(pending.confirmation_prompt, "approve P7K4M2")
+        self.assertEqual(pending.confirmation_prompt, "approve")
 
     def test_approval_spend_precision_matches_the_pinned_cli(self):
         with self.assertRaisesRegex(ValueError, "precision"):

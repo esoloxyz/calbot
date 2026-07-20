@@ -407,7 +407,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(result["error_code"], "confirmation_required")
         self.assertEqual(result["approval_amount"], "0.10")
-        self.assertEqual(result["confirmation_prompt"], "approve $0.10")
+        self.assertEqual(result["confirmation_prompt"], "approve")
         self.assertEqual(run.call_count, 1)
 
     def test_sub_cent_confirmation_keeps_the_exact_amount(self):
@@ -426,7 +426,7 @@ class TempoClientAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(result["error_code"], "confirmation_required")
         self.assertEqual(result["approval_amount"], "0.003")
-        self.assertEqual(result["confirmation_prompt"], "approve $0.003")
+        self.assertEqual(result["confirmation_prompt"], "approve")
 
     def test_confirmation_required_locks_out_a_different_paid_call(self):
         budget = TempoRequestBudget()

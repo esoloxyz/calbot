@@ -615,13 +615,13 @@ class CalendarConfirmationGuardTests(unittest.TestCase):
             messages=[{"role": "user", "content": "look up the weather"}],
             run_tool=lambda name, args: ToolExecutionResult(
                 output='{"error_code":"confirmation_required"}',
-                user_reply="Reply exactly: approve P7K4M2",
+                user_reply="Reply approve",
                 halt=True,
             ),
             max_tool_rounds=10,
         )
 
-        self.assertEqual(reply, "Reply exactly: approve P7K4M2")
+        self.assertEqual(reply, "Reply approve")
         self.assertEqual(len(client.messages.calls), 1)
 
     def test_non_calendar_text_survives_a_side_effect_approval_boundary(self):
@@ -640,13 +640,13 @@ class CalendarConfirmationGuardTests(unittest.TestCase):
             ],
             lambda name, args: ToolExecutionResult(
                 output='{"error_code":"confirmation_required"}',
-                user_reply="Reply exactly: approve P7K4M2",
+                user_reply="Reply approve",
                 halt=True,
             ),
         )
 
         self.assertIn("forecast calls for rain", reply)
-        self.assertIn("approve P7K4M2", reply)
+        self.assertIn("Reply approve", reply)
 
     def test_contextual_payment_explanation_survives_an_approval_boundary(self):
         explanation = "Payment approved means the issuer accepted it."
@@ -665,13 +665,13 @@ class CalendarConfirmationGuardTests(unittest.TestCase):
             ],
             lambda name, args: ToolExecutionResult(
                 output='{"error_code":"confirmation_required"}',
-                user_reply="Reply exactly: approve P7K4M2",
+                user_reply="Reply approve",
                 halt=True,
             ),
         )
 
         self.assertIn(explanation, reply)
-        self.assertIn("approve P7K4M2", reply)
+        self.assertIn("Reply approve", reply)
 
     def test_false_action_claim_is_removed_without_losing_mixed_answer(self):
         client = FakeClaude(
@@ -696,14 +696,14 @@ class CalendarConfirmationGuardTests(unittest.TestCase):
             messages=[{"role": "user", "content": "weather plus reminder"}],
             run_tool=lambda name, args: ToolExecutionResult(
                 output='{"error_code":"confirmation_required"}',
-                user_reply="Reply exactly: approve P7K4M2",
+                user_reply="Reply approve",
                 halt=True,
             ),
             max_tool_rounds=10,
         )
 
         self.assertIn("Rain is likely at 6 PM.", reply)
-        self.assertIn("approve P7K4M2", reply)
+        self.assertIn("Reply approve", reply)
         self.assertNotIn("I added", reply)
         recovery_messages = client.messages.calls[1]["messages"]
         for message in recovery_messages:
@@ -730,13 +730,13 @@ class CalendarConfirmationGuardTests(unittest.TestCase):
             ],
             lambda name, args: ToolExecutionResult(
                 output='{"error_code":"confirmation_required"}',
-                user_reply="Reply exactly: approve P7K4M2",
+                user_reply="Reply approve",
                 halt=True,
             ),
             user_text="pencil dinner into my calendar",
         )
 
-        self.assertEqual(reply, "Reply exactly: approve P7K4M2")
+        self.assertEqual(reply, "Reply approve")
 
     def test_preapproval_completion_phrases_are_never_shown(self):
         cases = (
@@ -762,12 +762,12 @@ class CalendarConfirmationGuardTests(unittest.TestCase):
                     ],
                     lambda name, args: ToolExecutionResult(
                         output='{"error_code":"confirmation_required"}',
-                        user_reply="Reply exactly: approve P7K4M2",
+                        user_reply="Reply approve",
                         halt=True,
                     ),
                 )
 
-                self.assertEqual(reply, "Reply exactly: approve P7K4M2")
+                self.assertEqual(reply, "Reply approve")
 
 
 if __name__ == "__main__":

@@ -121,6 +121,8 @@ key's wallet-level spending limit is an additional safeguard.
    - `CALENDAR_ID`
    - `TEMPO_WALLET_STORE_B64`
    - `TEMPO_AUTO_SPEND` and `TEMPO_MAX_SPEND`
+   - `TEMPO_RPC_URL` only when you want to override the official RPC selected
+     from the wallet's Tempo network
    - `TIMEZONE` and `BOT_OWNER`
 4. Confirm the logs contain `Bot starting (polling)…`.
 5. Send `/id`, replace the temporary `ALLOWED_CHAT_ID`, and let Railway
@@ -128,25 +130,30 @@ key's wallet-level spending limit is an additional safeguard.
 6. Send `/start`, `/today`, and `/balance` to verify Telegram, Calendar, and
    Tempo connectivity.
 
+`/balance` uses Tempo's official token list and public RPC to find all stablecoin
+balances above `$0.50`. These are read-only calls and do not require an approval
+or spend wallet funds. If your deployment uses a private RPC, set its HTTPS URL
+as `TEMPO_RPC_URL`.
+
 ## Example
 
 ```text
 User: Dinner at Lilia Saturday at 8
 Bot:  Calendar change awaiting approval: add Dinner at Lilia starting Saturday at 8.
-      Reply exactly: approve A1B2C3
-User: approve A1B2C3
+      Reply approve to continue.
+User: approve
 Bot:  Done — Dinner at Lilia is on the calendar.
 
 Another user: I have an appointment Tuesday at 4
 Bot:          Calendar change awaiting approval: add Appointment starting Tuesday at 4.
-              Reply exactly: approve D4E5F6
+              Reply approve to continue.
 
 User: /weekend
 Bot:  Your weekend: Saturday — Dinner at Lilia at 8 PM. Sunday is open.
 ```
 
 Calendar events appear in every account with which the calendar is shared.
-Approval tokens expire after ten minutes, are bound to the initiating Telegram
+Pending approvals expire after ten minutes, are bound to the initiating Telegram
 user, and are cancelled by that user's next unrelated message.
 
 ## Operational notes

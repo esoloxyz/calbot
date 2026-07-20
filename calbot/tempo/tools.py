@@ -6,7 +6,10 @@ from calbot.tempo.payments import MAX_MONEY_TEXT_CHARS
 TEMPO_TOOLS = [
     {
         "name": "tempo_wallet_balance",
-        "description": "Check the Tempo wallet balance and address.",
+        "description": (
+            "Check all Tempo stablecoin balances. Summarize them in simple English "
+            "and never expose raw JSON or wallet call data."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {},

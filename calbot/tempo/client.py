@@ -18,6 +18,7 @@ from calbot.tempo.catalog import (
     _safe_public_https_url,
     _service_ids,
 )
+from calbot.tempo.balances import read_all_wallet_balances
 from calbot.tempo.payments import (
     EndpointPayment,
     TempoCallPreview,
@@ -61,6 +62,7 @@ class TempoClient:
         tempo_home: str = "",
         max_spend: str = "",
         auto_spend: str = "",
+        rpc_url: str = "",
     ):
         user_tempo_dir = os.path.join(os.path.expanduser("~"), ".tempo")
         self.bin = (
@@ -74,6 +76,7 @@ class TempoClient:
         self.store_path = os.path.join(self.wallet_dir, "store.json")
         self.max_spend = max_spend or os.environ.get("TEMPO_MAX_SPEND", "0.50")
         self.auto_spend = auto_spend or os.environ.get("TEMPO_AUTO_SPEND", "0.01")
+        self.rpc_url = rpc_url or os.environ.get("TEMPO_RPC_URL", "")
         self._allowed_endpoints: dict[str, set[str]] = {}
         self._endpoint_payments: dict[Tuple[str, str], EndpointPayment] = {}
         self._discovered_service_ids: set[str] = set()
@@ -168,6 +171,13 @@ class TempoClient:
 
     def wallet_balance(self) -> str:
         return self._run(["wallet", "whoami", "--format", "json"])
+
+    def wallet_balances(self) -> str:
+        """Return all registry-listed stablecoin balances when RPC is available."""
+        return read_all_wallet_balances(
+            self.wallet_balance(),
+            rpc_url=self.rpc_url,
+        )
 
     def discover_services(self, query: str) -> str:
         if not isinstance(query, str):
@@ -543,7 +553,7 @@ class TempoClient:
     ) -> str:
         try:
             if name == "tempo_wallet_balance":
-                return self.wallet_balance()
+                return self.wallet_balances()
             if name == "tempo_discover_services":
                 return self.discover_services(args["query"])
             if name == "tempo_service_details":

@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import copy
 import re
-import secrets
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Callable, Optional
+from typing import Optional
 
 
 APPROVAL_TTL = timedelta(minutes=10)
@@ -38,10 +37,6 @@ def _fixed_decimal(value: str, *, allow_zero: bool = False) -> str:
     return f"{whole}.{fraction}"
 
 
-def _default_token() -> str:
-    return secrets.token_hex(3).upper()
-
-
 @dataclass(frozen=True)
 class PendingAction:
     """An exact side effect proposed for one Telegram chat member."""
@@ -49,17 +44,16 @@ class PendingAction:
     actor: ActorKey
     tool_name: str
     tool_args: dict
-    token: str
     created_at: datetime
     amount: str = ""
     spend_limit: str | None = None
     amount_is_maximum: bool = False
     preview: str = ""
+    request_text: str = ""
 
     @property
     def confirmation_prompt(self) -> str:
-        suffix = f" ${self.amount}" if self.amount else ""
-        return f"approve {self.token}{suffix}"
+        return "approve"
 
     def expired(self, now: Optional[datetime] = None) -> bool:
         return (now or _utc_now()) - self.created_at > APPROVAL_TTL
@@ -74,8 +68,7 @@ class PendingAction:
 class PendingActionStore:
     """Thread-safe in-memory state for one-shot side-effect approvals."""
 
-    def __init__(self, token_factory: Callable[[], str] = _default_token):
-        self._token_factory = token_factory
+    def __init__(self):
         self._pending: dict[ActorKey, PendingAction] = {}
         self._lock = threading.RLock()
 
@@ -89,16 +82,15 @@ class PendingActionStore:
         spend_limit: str | None = None,
         amount_is_maximum: bool = False,
         preview: str = "",
+        request_text: str = "",
         now: Optional[datetime] = None,
     ) -> PendingAction:
-        token = self._token_factory().strip().upper()
-        if not re.fullmatch(r"[A-Z0-9]{6,32}", token):
-            raise ValueError("approval token must contain 6-32 letters or digits")
+        if len(request_text) > 4000:
+            raise ValueError("approval request text is too long")
         pending = PendingAction(
             actor=actor,
             tool_name=tool_name,
             tool_args=copy.deepcopy(tool_args),
-            token=token,
             created_at=now or _utc_now(),
             amount=_fixed_decimal(amount) if amount else "",
             spend_limit=(
@@ -108,6 +100,7 @@ class PendingActionStore:
             ),
             amount_is_maximum=bool(amount_is_maximum),
             preview=str(preview),
+            request_text=str(request_text),
         )
         with self._lock:
             self._pending[actor] = pending

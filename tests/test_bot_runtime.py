@@ -3,6 +3,7 @@ import asyncio
 import threading
 import time
 import unittest
+from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -175,19 +176,23 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         self.assertIn("failed", error_code_reply)
         self.assertNotIn("Done", error_code_reply)
 
-    def test_wallet_balance_is_rendered_without_claude(self):
+    def test_wallet_balances_are_plain_english_and_hide_dust_and_call_data(self):
         tempo = FakeTempo()
-        tempo.wallet_balance = lambda: json.dumps(
+        tempo.wallet_balances = lambda: json.dumps(
             {
                 "ready": True,
                 "wallet": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "balance": {
-                    "total": "1.25",
-                    "locked": "0",
-                    "available": "1.25",
-                    "active_sessions": 0,
-                    "symbol": "USDC",
-                },
+                "balances": [
+                    {"symbol": "USDC", "amount": "10", "currency": "USD"},
+                    {"symbol": "pathUSD", "amount": "20", "currency": "USD"},
+                    {"symbol": "dustUSD", "amount": "0.50", "currency": "USD"},
+                    {
+                        "symbol": "edgeUSD",
+                        "amount": "0.500001",
+                        "currency": "USD",
+                    },
+                    {"symbol": "cbBTC", "amount": "1", "currency": "BTC"},
+                ],
                 "privateKey": "must-not-render",
             }
         )
@@ -202,10 +207,46 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
 
         reply = runtime.wallet_balance_reply()
 
-        self.assertIn("1.25", reply)
-        self.assertIn("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", reply)
+        self.assertIn("$10 USDC", reply)
+        self.assertIn("$20 pathUSD", reply)
+        self.assertIn("$0.500001 edgeUSD", reply)
+        self.assertNotIn("dustUSD", reply)
+        self.assertNotIn("cbBTC", reply)
+        self.assertNotIn("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", reply)
         self.assertNotIn("privateKey", reply)
+        self.assertNotIn("{", reply)
+        self.assertNotIn("}", reply)
         self.assertEqual(claude.messages.calls, [])
+
+    def test_conversational_balance_tool_returns_plain_text_to_the_model(self):
+        tempo = FakeTempo()
+        tempo.wallet_balances = lambda: json.dumps(
+            {"balances": [{"symbol": "pathUSD", "amount": "2", "currency": "USD"}]}
+        )
+        claude = FakeClaude(
+            [
+                tool_response("tempo_wallet_balance", {}),
+                text_response("Your Tempo wallet balance is $2 pathUSD."),
+            ]
+        )
+        runtime = BotRuntime(
+            config=config(),
+            claude_client=claude,
+            calendar_client=FakeCalendar(),
+            tempo_client=tempo,
+            tools=[],
+        )
+
+        reply = runtime.ask(
+            chat_id=-100123,
+            user_id=101,
+            user_text="What's my Tempo balance?",
+        )
+
+        self.assertEqual(reply, "Your Tempo wallet balance is $2 pathUSD.")
+        second_turn = repr(claude.messages.calls[1]["messages"])
+        self.assertIn("Your Tempo wallet balance is $2 pathUSD.", second_turn)
+        self.assertNotIn('"balances"', second_turn)
 
     def test_calendar_mutation_is_proposed_then_executed_directly_once(self):
         claude = FakeClaude(
@@ -227,7 +268,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=calendar,
             tempo_client=FakeTempo(),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         proposal = runtime.ask(
@@ -238,19 +278,19 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         )
 
         self.assertEqual(calendar.calls, [])
-        self.assertIn("approve P7K4M2", proposal)
+        self.assertIn("Reply approve", proposal)
         self.assertIn("2026-07-19T19:00:00-04:00", proposal)
         self.assertIn("2026-07-19T21:00:00-04:00", proposal)
         approved = runtime.ask(
             chat_id=-100123,
             user_id=101,
-            user_text="approve P7K4M2",
+            user_text="approve",
             request_id="telegram:-100123:43",
         )
         replay = runtime.ask(
             chat_id=-100123,
             user_id=101,
-            user_text="approve P7K4M2",
+            user_text="approve",
             request_id="telegram:-100123:44",
         )
 
@@ -271,7 +311,7 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             [message["role"] for message in history],
             ["user", "assistant", "user", "assistant"],
         )
-        self.assertNotIn("P7K4M2", json.dumps(history))
+        self.assertNotIn("exact approval phrase", json.dumps(history))
 
     def test_untrusted_tool_output_cannot_execute_injected_calendar_delete(self):
         claude = FakeClaude(
@@ -292,7 +332,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=calendar,
             tempo_client=tempo,
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         reply = runtime.ask(
@@ -304,7 +343,7 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
 
         self.assertEqual(calendar.calls, [])
         self.assertIn("delete", reply.casefold())
-        self.assertIn("approve P7K4M2", reply)
+        self.assertIn("Reply approve", reply)
 
     def test_every_positive_cost_call_requires_actor_bound_approval(self):
         call_args = {
@@ -321,7 +360,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=tempo,
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         proposal = runtime.ask(
@@ -332,15 +370,15 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         )
 
         self.assertEqual(tempo.calls, [])
-        self.assertIn("approve P7K4M2 $0.003", proposal)
-        self.assertIn(call_args["url"], proposal)
-        self.assertIn("prompt", proposal)
+        self.assertIn("Reply approve", proposal)
+        self.assertIn("$0.003", proposal)
         self.assertIn("a puppy", proposal)
-        self.assertIn("POST", proposal)
+        self.assertNotIn(call_args["url"], proposal)
+        self.assertNotIn("{", proposal)
         result = runtime.ask(
             chat_id=-100123,
             user_id=101,
-            user_text="approve P7K4M2 $0.003",
+            user_text="approve",
             request_id="telegram:-100123:61",
         )
 
@@ -348,6 +386,100 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         self.assertEqual(tempo.calls[0][0], "tempo_call_service")
         self.assertIn("https://example.com/image.png", result)
         self.assertEqual(len(claude.messages.calls), 1)
+
+    def test_web_search_result_is_synthesized_without_exposing_raw_json(self):
+        call_args = {
+            "url": "https://exa.mpp.tempo.xyz/search",
+            "method": "POST",
+            "body": json.dumps(
+                {
+                    "query": "best restaurants in Tribeca NYC",
+                    "numResults": 5,
+                    "type": "neural",
+                }
+            ),
+            "max_spend": "",
+        }
+        paid_output = json.dumps(
+            {
+                "requestId": "private-request-id",
+                "results": [
+                    {
+                        "title": "The Best Restaurants in Tribeca",
+                        "url": "https://ny.eater.com/maps/best-restaurants-tribeca-nyc",
+                        "text": "Frenchette, Locanda Verde, and Houseman stand out.",
+                    }
+                ],
+            }
+        )
+        answer = (
+            "Three strong Tribeca choices are Frenchette, Locanda Verde, and "
+            "Houseman. Source: https://ny.eater.com/maps/best-restaurants-tribeca-nyc"
+        )
+        claude = FakeClaude(
+            [
+                tool_response("tempo_call_service", call_args),
+                text_response(answer),
+            ]
+        )
+        runtime = BotRuntime(
+            config=config(),
+            claude_client=claude,
+            calendar_client=FakeCalendar(),
+            tempo_client=FakeTempo(paid_output=paid_output),
+            tools=[],
+        )
+
+        proposal = runtime.ask(
+            chat_id=-100123,
+            user_id=101,
+            user_text="What are the 3 best restaurants in Tribeca NYC?",
+        )
+        result = runtime.ask(
+            chat_id=-100123,
+            user_id=101,
+            user_text="approve",
+        )
+
+        self.assertIn("best restaurants in Tribeca NYC", proposal)
+        self.assertIn("Reply approve", proposal)
+        self.assertNotIn("{", proposal)
+        self.assertEqual(result, answer)
+        self.assertNotIn("{", result)
+        self.assertNotIn("requestId", result)
+        self.assertEqual(len(claude.messages.calls), 2)
+        self.assertNotIn("tools", claude.messages.calls[1])
+        self.assertIn("untrusted", claude.messages.calls[1]["system"])
+
+    def test_json_like_synthesis_is_rejected_for_plain_text_fallback(self):
+        runtime = BotRuntime(
+            config=config(),
+            claude_client=FakeClaude([text_response('{"raw":"call data"}')]),
+            calendar_client=FakeCalendar(),
+            tempo_client=FakeTempo(),
+            tools=[],
+        )
+        output = json.dumps(
+            {
+                "results": [
+                    {
+                        "title": "A useful source",
+                        "url": "https://example.com/source",
+                        "snippet": "A concise finding.",
+                    }
+                ]
+            }
+        )
+
+        reply = runtime._summarize_tempo_result(
+            output,
+            request_text="Summarize this",
+        )
+
+        self.assertIn("A useful source", reply)
+        self.assertIn("https://example.com/source", reply)
+        self.assertNotIn("{", reply)
+        self.assertNotIn("}", reply)
 
     def test_zero_cost_post_still_requires_actor_bound_approval(self):
         call_args = {
@@ -364,7 +496,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=tempo,
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         proposal = runtime.ask(
@@ -374,15 +505,15 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         )
 
         self.assertEqual(tempo.calls, [])
-        self.assertIn("approve P7K4M2", proposal)
-        self.assertNotIn("approve P7K4M2 $", proposal)
-        self.assertIn(call_args["url"], proposal)
-        self.assertIn("private_context", proposal)
+        self.assertIn("Reply approve", proposal)
+        self.assertIn("free", proposal)
+        self.assertNotIn(call_args["url"], proposal)
+        self.assertNotIn("private_context", proposal)
 
         runtime.ask(
             chat_id=-100123,
             user_id=101,
-            user_text="approve P7K4M2",
+            user_text="approve",
         )
         self.assertEqual(len(tempo.calls), 1)
         self.assertEqual(tempo.calls[0][2].approved_limit, Decimal("0"))
@@ -402,7 +533,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=tempo,
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         proposal = runtime.ask(
@@ -412,8 +542,8 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         )
 
         self.assertEqual(tempo.calls, [])
-        self.assertIn("External service request awaiting approval", proposal)
-        self.assertIn("approve P7K4M2", proposal)
+        self.assertIn("Reply approve", proposal)
+        self.assertIn("free", proposal)
 
     def test_only_executor_created_zero_cost_poll_can_run_without_new_approval(self):
         call_args = {
@@ -473,14 +603,13 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
                 preview_amount=Decimal("0.20"), preview_is_maximum=True
             ),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         proposal = runtime.ask(chat_id=-100123, user_id=101, user_text="run it")
 
-        self.assertIn('"maximum_spend": "0.20"', proposal)
-        self.assertIn("authorize up to $0.20", proposal)
-        self.assertIn("approve P7K4M2 $0.20", proposal)
+        self.assertIn("cost up to $0.20", proposal)
+        self.assertIn("Reply approve", proposal)
+        self.assertNotIn("{", proposal)
 
     def test_validated_async_run_id_survives_in_safe_history_for_status_polling(self):
         call_args = {
@@ -503,14 +632,13 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=tempo,
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         runtime.ask(chat_id=-100123, user_id=101, user_text="start research")
         runtime.ask(
             chat_id=-100123,
             user_id=101,
-            user_text="approve P7K4M2 $0.003",
+            user_text="approve",
         )
         history_context = runtime.history[-100123][-1]["content"]
         status = runtime.ask(chat_id=-100123, user_id=101, user_text="is it done?")
@@ -615,7 +743,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=FakeTempo(),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         reply = runtime.ask(
@@ -625,7 +752,7 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         )
 
         self.assertIn("couldn't safely prepare", reply)
-        self.assertNotIn("approve P7K4M2", reply)
+        self.assertNotIn("Reply approve", reply)
         self.assertIsNone(runtime.approvals.get((-100123, 101)))
 
     def test_history_trims_complete_turns_and_never_starts_with_an_assistant(self):
@@ -676,7 +803,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=FakeTempo(paid_output=json.dumps({"result": injection})),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         runtime.ask(
@@ -688,7 +814,7 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         result = runtime.ask(
             chat_id=-100123,
             user_id=101,
-            user_text="approve P7K4M2 $0.003",
+            user_text="approve",
             request_id="telegram:-100123:71",
         )
         runtime.ask(
@@ -701,7 +827,7 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         self.assertIn(injection, result)
         next_turn_messages = json.dumps(claude.messages.calls[-1]["messages"])
         self.assertNotIn(injection, next_turn_messages)
-        self.assertIn("untrusted response", next_turn_messages)
+        self.assertIn("plain-English result", next_turn_messages)
 
     def test_wrong_approval_phrase_is_cancelled_without_model_reinterpretation(self):
         call_args = {
@@ -723,7 +849,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=tempo,
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         runtime.ask(
@@ -734,7 +859,7 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         wrong = runtime.ask(
             chat_id=-100123,
             user_id=101,
-            user_text="approve WRONG1 $0.003",
+            user_text="approve please",
         )
 
         self.assertEqual(wrong, "")
@@ -762,7 +887,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=FakeTempo(paid_output=json.dumps({"error": secret})),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         runtime.ask(
@@ -773,7 +897,7 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         result = runtime.ask(
             chat_id=-100123,
             user_id=101,
-            user_text="approve P7K4M2 $0.003",
+            user_text="approve",
         )
 
         self.assertIn(secret, result)
@@ -810,7 +934,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=tempo,
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         runtime.ask(
@@ -821,7 +944,7 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         result = runtime.ask(
             chat_id=-100123,
             user_id=101,
-            user_text="approve P7K4M2 $0.003",
+            user_text="approve",
         )
 
         self.assertIn("unknown outcome", result)
@@ -851,7 +974,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=FakeTempo(paid_output=json.dumps({"result": "X" * 20_000})),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         runtime.ask(
@@ -862,12 +984,13 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         result = runtime.ask(
             chat_id=-100123,
             user_id=101,
-            user_text="approve P7K4M2 $0.003",
+            user_text="approve",
         )
 
         self.assertLess(len(result), 4096)
-        self.assertIn("truncated", result)
-        self.assertIn("sha256=", result)
+        self.assertTrue(result.endswith("…"))
+        self.assertNotIn("{", result)
+        self.assertNotIn("}", result)
 
     def test_multiple_calendar_mutations_share_one_informed_approval(self):
         breakfast = {
@@ -895,7 +1018,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=calendar,
             tempo_client=FakeTempo(),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         proposal = runtime.ask(
@@ -909,12 +1031,12 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         self.assertIn("2 calendar changes", proposal)
         self.assertIn("Breakfast", proposal)
         self.assertIn("Dinner", proposal)
-        self.assertIn("approve P7K4M2", proposal)
+        self.assertIn("Reply approve", proposal)
 
         result = runtime.ask(
             chat_id=-100123,
             user_id=101,
-            user_text="approve P7K4M2",
+            user_text="approve",
             request_id="telegram:-100123:81",
         )
 
@@ -940,7 +1062,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=FakeTempo(),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         reply = runtime.ask(
@@ -971,7 +1092,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=FakeTempo(),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         reply = runtime.ask(chat_id=-100123, user_id=101, user_text="add five events")
@@ -997,7 +1117,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=FakeTempo(),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         proposal = runtime.ask(
@@ -1027,7 +1146,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(preview_title=injection),
             tempo_client=FakeTempo(),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         proposal = runtime.ask(
@@ -1067,7 +1185,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=FakeTempo(),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         reply = runtime.ask(
@@ -1077,7 +1194,7 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
         )
 
         self.assertIn("too large", reply)
-        self.assertNotIn("approve P7K4M2", reply)
+        self.assertNotIn("Reply approve", reply)
         self.assertIsNone(runtime.approvals.get((-100123, 101)))
 
     def test_json_escaping_cannot_overflow_service_approval_preview(self):
@@ -1097,7 +1214,6 @@ class BotRuntimeAuthorizationTests(unittest.TestCase):
             calendar_client=FakeCalendar(),
             tempo_client=FakeTempo(),
             tools=[],
-            approval_token_factory=lambda: "P7K4M2",
         )
 
         reply = runtime.ask(chat_id=-100123, user_id=101, user_text="run it")
@@ -1150,10 +1266,16 @@ class BotConfigTests(unittest.TestCase):
             BotConfig.from_env(values)
 
     def test_secret_values_are_omitted_from_config_repr(self):
-        rendered = repr(config())
+        rendered = repr(
+            replace(
+                config(),
+                tempo_rpc_url="https://rpc.example/private-api-key",
+            )
+        )
 
         self.assertNotIn("telegram-token", rendered)
         self.assertNotIn("anthropic-key", rendered)
+        self.assertNotIn("private-api-key", rendered)
 
     def test_respond_to_all_rejects_typos(self):
         values = {

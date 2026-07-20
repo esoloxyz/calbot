@@ -78,6 +78,7 @@ def create_runtime(config: BotConfig) -> BotRuntime:
         tempo_home=config.tempo_home,
         max_spend=config.tempo_max_spend,
         auto_spend=config.tempo_auto_spend,
+        rpc_url=config.tempo_rpc_url,
     )
     tempo.prepare_wallet(config.tempo_wallet_store_b64, required=True)
     return BotRuntime(
@@ -189,7 +190,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         '• Manage your calendar — "dinner at Lilia saturday 8pm"\n'
         '• Use Tempo services — "generate an image of a sunset"\n'
         "• Answer questions and help with anything else\n\n"
-        "Calendar changes and payments require an exact one-shot approval.\n\n"
+        "Calendar changes and external requests require a one-shot approval.\n"
+        "Just reply approve when prompted.\n\n"
         "Commands: /weekend  /week  /today  /balance"
     )
 

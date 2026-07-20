@@ -182,7 +182,7 @@ class TempoRequestBudget:
                     ),
                     "error_code": "confirmation_required",
                     "approval_amount": amount_text,
-                    "confirmation_prompt": f"approve ${amount_text}",
+                    "confirmation_prompt": "approve",
                 }
         if self.spent + amount > limit:
             return {

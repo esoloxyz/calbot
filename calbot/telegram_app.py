@@ -9,6 +9,7 @@ from datetime import datetime, time, timedelta
 import anthropic
 from telegram import Update
 from telegram.constants import ChatAction
+from telegram.error import Conflict
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -58,6 +59,15 @@ async def _send_in_chunks(bot, chat_id: int, text: str) -> None:
         return
     for chunk in telegram_chunks(safe_text):
         await bot.send_message(chat_id=chat_id, text=chunk)
+
+
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Keep expected rolling-deploy conflicts distinct from real failures."""
+    del update
+    if isinstance(context.error, Conflict):
+        log.warning("Telegram polling handoff conflict; retrying")
+        return
+    log.error("Unhandled Telegram error", exc_info=context.error)
 
 
 def configure_logging() -> None:
@@ -341,6 +351,7 @@ def create_application(
     app.add_handler(CommandHandler("week", cmd_week))
     app.add_handler(CommandHandler("today", cmd_today))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    app.add_error_handler(on_error)
 
     app.job_queue.run_daily(
         scheduled_digest,

@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
+from telegram.error import Conflict
+
 from calbot.config import BotConfig
 from calbot.telegram_app import (
     _authorized,
@@ -12,6 +14,7 @@ from calbot.telegram_app import (
     _run_digest_command,
     _weekend_window,
     cmd_start,
+    on_error,
     on_message,
     telegram_chunks,
 )
@@ -118,6 +121,14 @@ class TelegramBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn('run_polling(allowed_updates=["message"])', source)
         self.assertNotIn("Update.ALL_TYPES", source)
+
+    async def test_polling_handoff_conflict_is_a_concise_warning(self):
+        context = SimpleNamespace(error=Conflict("another poller is stopping"))
+
+        with self.assertLogs("assistant-bot", level="WARNING") as logs:
+            await on_error(None, context)
+
+        self.assertIn("polling handoff conflict", "\n".join(logs.output))
 
 
 class CalendarWindowTests(unittest.TestCase):

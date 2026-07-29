@@ -23,3 +23,7 @@ not sufficient.
 Operators should restrict `ALLOWED_CHAT_ID`, set `ALLOWED_USER_IDS`, protect
 deployment secrets, and give the Google service account access only to the
 calendar Calbot manages.
+
+Calendar event text is treated as untrusted data rather than instructions.
+Calendar writes are validated and version-checked by the application, and a
+write is never reported as successful without a verified API result.

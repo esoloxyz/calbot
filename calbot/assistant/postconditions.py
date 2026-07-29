@@ -6,8 +6,8 @@ import json
 import re
 from datetime import date, datetime, timedelta
 
+from calbot.calendar.contracts import CALENDAR_MUTATION_TOOLS
 
-CALENDAR_MUTATION_TOOLS = frozenset({"create_event", "update_event", "delete_event"})
 _UNVERIFIED_COMPLETION = re.compile(
     r"(?:\b(?:i|we)(?:['’]ve| have)?\s+"
     r"(?:added|created|scheduled|updated|changed|deleted|removed|moved)\b"

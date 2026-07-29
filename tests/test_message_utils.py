@@ -47,7 +47,7 @@ class TelegramMessageBoundaryTests(unittest.TestCase):
 
         self.assertEqual(
             reply,
-            "I couldn't turn that into a clear calendar answer. Please ask me again.",
+            "i couldn't turn that into a clear calendar answer. please ask me again.",
         )
         self.assertNotIn("{", reply)
         self.assertNotIn("create_event", reply)

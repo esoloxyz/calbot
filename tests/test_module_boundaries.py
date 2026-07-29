@@ -6,17 +6,13 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class ModuleBoundaryTests(unittest.TestCase):
-    def test_assistant_facade_preserves_small_public_imports(self):
+    def test_loop_uses_shared_execution_and_postcondition_helpers(self):
         from calbot.assistant import execution, loop, postconditions
 
         self.assertIs(loop.ToolExecutionResult, execution.ToolExecutionResult)
         self.assertIs(
             loop.claims_calendar_success,
             postconditions.claims_calendar_success,
-        )
-        self.assertIs(
-            loop.calendar_action_reply,
-            postconditions.calendar_action_reply,
         )
 
     def test_assistant_helpers_do_not_import_loop_facade(self):
@@ -26,6 +22,26 @@ class ModuleBoundaryTests(unittest.TestCase):
         ):
             source = (ROOT / filename).read_text()
             self.assertNotIn("from calbot.assistant.loop", source)
+
+    def test_runtime_delegates_calendar_writes_to_mutation_executor(self):
+        runtime = (ROOT / "calbot" / "runtime.py").read_text()
+        mutations = (ROOT / "calbot" / "mutations.py").read_text()
+
+        self.assertIn("CalendarMutationExecutor", runtime)
+        self.assertNotIn("preview_mutation", runtime)
+        self.assertIn("preview_mutation", mutations)
+        self.assertIn("calendar_action_reply", mutations)
+
+    def test_low_level_modules_do_not_depend_on_runtime_or_telegram(self):
+        for filename in (
+            "calbot/calendar/contracts.py",
+            "calbot/concurrency.py",
+            "calbot/config.py",
+            "calbot/personality.py",
+        ):
+            source = (ROOT / filename).read_text()
+            self.assertNotIn("calbot.runtime", source)
+            self.assertNotIn("calbot.telegram_app", source)
 
     def test_only_calendar_domain_package_remains(self):
         self.assertTrue((ROOT / "calbot" / "assistant").is_dir())

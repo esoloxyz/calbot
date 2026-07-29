@@ -1,10 +1,11 @@
 import unittest
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
-from calbot.runtime import BotConfig
+from calbot.config import BotConfig
 from calbot.telegram_app import (
     _authorized,
     _reply_in_chunks,
@@ -104,10 +105,19 @@ class TelegramBoundaryTests(unittest.IsolatedAsyncioTestCase):
             await cmd_start(update, SimpleNamespace())
 
         reply = message.reply_text.await_args.args[0]
+        self.assertEqual(reply, reply.lower())
         self.assertIn("shared calendar", reply)
         self.assertIn("/today", reply)
         self.assertNotIn("Tempo", reply)
         self.assertNotIn("DoorDash", reply)
+
+    def test_polling_requests_only_message_updates(self):
+        source = (
+            Path(__file__).resolve().parents[1] / "calbot" / "telegram_app.py"
+        ).read_text()
+
+        self.assertIn('run_polling(allowed_updates=["message"])', source)
+        self.assertNotIn("Update.ALL_TYPES", source)
 
 
 class CalendarWindowTests(unittest.TestCase):

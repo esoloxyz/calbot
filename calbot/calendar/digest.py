@@ -85,23 +85,23 @@ def _fetch_events(
 
 def _friendly_start(value: str, timezone: str) -> str:
     if not value:
-        return "Time not specified"
+        return "time not specified"
     if "T" not in value:
         day = datetime.fromisoformat(value).strftime("%a, %b %d").replace(" 0", " ")
-        return f"{day} (all day)"
+        return f"{day} (all day)".lower()
 
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo:
         parsed = parsed.astimezone(ZoneInfo(timezone))
     day = parsed.strftime("%a, %b %d").replace(" 0", " ")
     clock = parsed.strftime("%I:%M %p").lstrip("0")
-    return f"{day} at {clock}"
+    return f"{day} at {clock}".lower()
 
 
 def _truncation_notice(event_count: int) -> str:
     noun = "event" if event_count == 1 else "events"
     return (
-        "More events may exist; this digest shows only the first "
+        "more events may exist; this digest shows only the first "
         f"{event_count} {noun} fetched safely."
     )
 
@@ -113,20 +113,22 @@ def _fallback_digest(
         if truncated:
             return "\n".join(
                 [
-                    f"No events were fetched for your {label}.",
+                    f"no events were fetched for your {label}.",
                     _truncation_notice(0),
                 ]
             )
-        return f"Your {label} is clear — nothing is scheduled."
+        return f"your {label} is clear — nothing is scheduled."
 
-    lines = [f"Your {label}:"]
+    lines = [f"your {label}:"]
     rendered_count = 0
     # Reserve room for authoritative omission/truncation notices.
     notice_reserve = 300
     for event in events:
-        line = f"• {_friendly_start(event['start'], timezone)} — {event['title']}"
+        line = (
+            f"• {_friendly_start(event['start'], timezone)} — {event['title']}".lower()
+        )
         if event["location"]:
-            line += f" ({event['location']})"
+            line += f" ({event['location']})".lower()
         candidate = "\n".join([*lines, line])
         if len(candidate) + notice_reserve > MAX_DIGEST_CHARS:
             break

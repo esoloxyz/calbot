@@ -1,5 +1,6 @@
 .env
 .DS_Store
+.railway-config-pull-*
 *.json
 __pycache__/
 *.pyc

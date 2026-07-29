@@ -2,156 +2,22 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import os
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
-from typing import Callable, Mapping, Optional
-from zoneinfo import ZoneInfo
 
-from calbot.assistant.execution import ToolExecutionResult
 from calbot.assistant.loop import run_assistant_turn
 from calbot.assistant.policy import CALENDAR_ASSISTANT_POLICY
-from calbot.assistant.postconditions import (
-    CALENDAR_MUTATION_TOOLS,
-    calendar_action_reply,
-)
-from calbot.calendar.client import (
-    CALENDAR_FIELD_LIMITS,
-    CALENDAR_MUTATION_FIELDS,
-    CALENDAR_REQUIRED_FIELDS,
-)
+from calbot.calendar.contracts import CALENDAR_MUTATION_TOOLS
+from calbot.config import BotConfig
 from calbot.messages import build_user_turn
+from calbot.mutations import CalendarMutationExecutor
+from calbot.personality import load_personality
 
 
 log = logging.getLogger("assistant-bot")
 MAX_HISTORY_TURNS = 12
-MAX_CALENDAR_BATCH_ACTIONS = 5
-MAX_PERSONALITY_CHARS = 8000
-PERSONALITY_PATH = Path(__file__).resolve().parent.parent / "PERSONALITY.md"
-DEFAULT_PERSONALITY = "Warm, concise, natural, and helpful."
-
-
-def load_personality(path: Path = PERSONALITY_PATH) -> str:
-    """Load bounded, repository-owned tone guidance."""
-    try:
-        personality = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        log.warning("Could not load personality file; using the default")
-        return DEFAULT_PERSONALITY
-    if not personality:
-        return DEFAULT_PERSONALITY
-    if len(personality) > MAX_PERSONALITY_CHARS:
-        log.warning(
-            "Personality file exceeded %s characters and was truncated",
-            MAX_PERSONALITY_CHARS,
-        )
-        return personality[:MAX_PERSONALITY_CHARS].rstrip()
-    return personality
-
-
-@dataclass(frozen=True)
-class BotConfig:
-    telegram_token: str = field(repr=False)
-    anthropic_api_key: str = field(repr=False)
-    allowed_chat_id: int
-    timezone: str = "America/New_York"
-    model: str = "claude-sonnet-4-6"
-    bot_owner: str = "there"
-    respond_to_all: bool = True
-    google_service_account_json: str = field(default="", repr=False)
-    calendar_id: str = ""
-    allowed_user_ids: frozenset[int] = frozenset()
-
-    @classmethod
-    def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "BotConfig":
-        values = os.environ if env is None else env
-        required = (
-            "TELEGRAM_BOT_TOKEN",
-            "ANTHROPIC_API_KEY",
-            "ALLOWED_CHAT_ID",
-            "GOOGLE_SERVICE_ACCOUNT_JSON",
-            "CALENDAR_ID",
-        )
-        missing = [name for name in required if not values.get(name)]
-        if missing:
-            raise ValueError(f"Missing required configuration: {', '.join(missing)}")
-
-        try:
-            allowed_chat_id = int(values["ALLOWED_CHAT_ID"])
-        except ValueError as exc:
-            raise ValueError("ALLOWED_CHAT_ID must be an integer") from exc
-
-        timezone = values.get("TIMEZONE", "America/New_York")
-        try:
-            ZoneInfo(timezone)
-        except Exception as exc:
-            raise ValueError(
-                f"TIMEZONE is not a valid IANA timezone: {timezone}"
-            ) from exc
-
-        respond_to_all = values.get("RESPOND_TO_ALL", "true").casefold()
-        if respond_to_all not in {"true", "false"}:
-            raise ValueError("RESPOND_TO_ALL must be true or false")
-
-        try:
-            allowed_users = frozenset(
-                int(value.strip())
-                for value in values.get("ALLOWED_USER_IDS", "").split(",")
-                if value.strip()
-            )
-        except ValueError as exc:
-            raise ValueError("ALLOWED_USER_IDS must contain only integers") from exc
-
-        return cls(
-            telegram_token=values["TELEGRAM_BOT_TOKEN"],
-            anthropic_api_key=values["ANTHROPIC_API_KEY"],
-            allowed_chat_id=allowed_chat_id,
-            timezone=timezone,
-            model=values.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-            bot_owner=values.get("BOT_OWNER", "there"),
-            respond_to_all=respond_to_all == "true",
-            google_service_account_json=values["GOOGLE_SERVICE_ACCOUNT_JSON"],
-            calendar_id=values["CALENDAR_ID"],
-            allowed_user_ids=allowed_users,
-        )
-
-    @property
-    def tz(self) -> ZoneInfo:
-        return ZoneInfo(self.timezone)
-
-    def actor_allowed(self, user_id: int) -> bool:
-        return not self.allowed_user_ids or user_id in self.allowed_user_ids
-
-
-class BlockingBridge:
-    """Run synchronous clients off-loop, one operation at a time."""
-
-    def __init__(self):
-        self._lock = asyncio.Lock()
-
-    async def run(self, function: Callable, *args, **kwargs):
-        async with self._lock:
-            worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-            try:
-                return await asyncio.shield(worker)
-            except asyncio.CancelledError as cancellation:
-                while not worker.done():
-                    try:
-                        await asyncio.shield(worker)
-                    except asyncio.CancelledError:
-                        continue
-                try:
-                    worker.result()
-                except Exception:
-                    log.exception(
-                        "Blocking operation failed after its caller was cancelled"
-                    )
-                raise cancellation
 
 
 class BotRuntime:
@@ -178,6 +44,7 @@ class BotRuntime:
             else load_personality()
         )
         self.history: dict[int, deque] = defaultdict(deque)
+        self.mutations = CalendarMutationExecutor(calendar_client, logger=log)
 
     def _record_history_turn(
         self,
@@ -211,161 +78,6 @@ web, make payments, order food, manage wallets, or call any non-calendar service
 
 {CALENDAR_ASSISTANT_POLICY}"""
 
-    @staticmethod
-    def _validated_mutation(name: str, args: dict) -> dict:
-        if name not in CALENDAR_MUTATION_TOOLS:
-            raise ValueError("Unsupported calendar mutation")
-        if not isinstance(args, dict):
-            raise ValueError("Calendar tool arguments must be an object")
-
-        allowed = set(CALENDAR_MUTATION_FIELDS[name])
-        unsupported = set(args) - allowed
-        if unsupported:
-            raise ValueError("Calendar change contains unsupported fields")
-
-        for field_name in CALENDAR_REQUIRED_FIELDS[name]:
-            if field_name not in args:
-                raise ValueError(f"Calendar change is missing {field_name}")
-
-        validated = {}
-        for field_name, value in args.items():
-            if field_name == "all_day":
-                if type(value) is not bool:
-                    raise ValueError("all_day must be true or false")
-                validated[field_name] = value
-                continue
-            if not isinstance(value, str):
-                raise ValueError(f"{field_name} must be a string")
-            if field_name in CALENDAR_REQUIRED_FIELDS[name] and not value.strip():
-                raise ValueError(f"{field_name} must not be empty")
-            limit = CALENDAR_FIELD_LIMITS.get(field_name)
-            if limit is not None and len(value) > limit:
-                raise ValueError(f"{field_name} is too long")
-            validated[field_name] = value
-        return validated
-
-    def _prepare_action(
-        self,
-        name: str,
-        args: dict,
-        *,
-        request_id: str,
-    ) -> dict:
-        validated = self._validated_mutation(name, args)
-        preview = self.cal.preview_mutation(name, validated)
-        execution_args = dict(validated)
-        if name == "create_event":
-            # The calendar client may repair a same-date midnight end into the
-            # following day while validating the preview.
-            execution_args.update(preview["event"])
-            execution_args["_idempotency_key"] = request_id
-        else:
-            execution_args["_expected_etag"] = preview["event_etag"]
-        return {
-            "name": name,
-            "args": execution_args,
-            "preview": preview,
-        }
-
-    def _execute_actions(
-        self,
-        *,
-        actions: list[tuple[str, dict]],
-        request_id: str,
-    ) -> ToolExecutionResult:
-        if not actions or len(actions) > MAX_CALENDAR_BATCH_ACTIONS:
-            return ToolExecutionResult(
-                output=json.dumps({"error": "Too many calendar changes"}),
-                user_reply=(
-                    f"please limit one request to {MAX_CALENDAR_BATCH_ACTIONS} "
-                    "calendar changes."
-                ),
-                halt=True,
-            )
-
-        replies = []
-        outcomes = []
-        for index, (name, args) in enumerate(actions, start=1):
-            try:
-                action = self._prepare_action(
-                    name,
-                    args,
-                    request_id=f"{request_id}:{index}",
-                )
-            except (KeyError, TypeError, ValueError) as exc:
-                log.warning(
-                    "Calendar action rejected before write "
-                    "(action=%s index=%s count=%s): %s",
-                    name,
-                    index,
-                    len(actions),
-                    exc,
-                )
-                replies.append(
-                    "i couldn't make one calendar change because its date or time "
-                    "didn't make sense. please ask me to try that one again."
-                )
-                outcomes.append("validation_failed")
-                continue
-            except Exception:
-                log.exception(
-                    "Calendar action preparation failed (action=%s index=%s count=%s)",
-                    name,
-                    index,
-                    len(actions),
-                )
-                replies.append(
-                    "i couldn't load the calendar details needed for one change. "
-                    "please ask me to try that one again."
-                )
-                outcomes.append("preparation_failed")
-                continue
-
-            log.info(
-                "calendar action started (action=%s index=%s count=%s)",
-                name,
-                index,
-                len(actions),
-            )
-            output = self.cal.run_tool(name, action["args"])
-            reply = calendar_action_reply(
-                name,
-                self._reply_args(action),
-                output,
-            )
-            replies.append(reply or "i couldn't verify that calendar change.")
-            try:
-                result = json.loads(output)
-            except (TypeError, json.JSONDecodeError):
-                result = {}
-            status = result.get("status") if isinstance(result, dict) else None
-            outcomes.append(status or "failed")
-            log.info(
-                "calendar action completed (action=%s index=%s count=%s outcome=%s)",
-                name,
-                index,
-                len(actions),
-                status or "failed",
-            )
-
-        return ToolExecutionResult(
-            output=json.dumps({"status": "completed", "outcomes": outcomes}),
-            user_reply="\n".join(replies),
-            halt=True,
-        )
-
-    @staticmethod
-    def _reply_args(action: dict) -> dict:
-        args = dict(action["args"])
-        preview = action["preview"]
-        if action["name"] != "create_event":
-            current_event = preview.get("current_event", {})
-            args.setdefault("title", current_event.get("title", "the event"))
-            args.setdefault("start", current_event.get("start", ""))
-            args.setdefault("end", current_event.get("end", ""))
-            args.setdefault("all_day", "T" not in str(args.get("start", "")))
-        return args
-
     def ask(
         self,
         *,
@@ -381,7 +93,7 @@ web, make payments, order food, manage wallets, or call any non-calendar service
 
         def run_tool(name: str, args: dict):
             if name in CALENDAR_MUTATION_TOOLS:
-                return self._execute_actions(
+                return self.mutations.execute(
                     actions=[(name, args)],
                     request_id=stable_request_id,
                 )
@@ -395,7 +107,7 @@ web, make payments, order food, manage wallets, or call any non-calendar service
             return self.cal.run_tool(name, args)
 
         def run_tool_batch(actions: list[tuple[str, dict]]):
-            return self._execute_actions(
+            return self.mutations.execute(
                 actions=actions,
                 request_id=stable_request_id,
             )

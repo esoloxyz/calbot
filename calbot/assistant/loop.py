@@ -8,14 +8,11 @@ import time
 from collections.abc import Callable
 
 from calbot.assistant.execution import (
-    ToolExecutionResult as ToolExecutionResult,
+    ToolExecutionResult,
     _tool_outcome,
 )
-from calbot.assistant.postconditions import (
-    CALENDAR_MUTATION_TOOLS,
-    calendar_action_reply as calendar_action_reply,
-    claims_calendar_success as claims_calendar_success,
-)
+from calbot.assistant.postconditions import claims_calendar_success
+from calbot.calendar.contracts import CALENDAR_MUTATION_TOOLS
 
 
 log = logging.getLogger("assistant-bot")
@@ -51,7 +48,7 @@ def run_assistant_turn(
 
     for _ in range(max_tool_rounds):
         if time.monotonic() - started_at > MAX_ASSISTANT_TURN_SECONDS:
-            return "That request took too long. Please try it as a smaller request."
+            return "that request took too long. please try it as a smaller request."
 
         response = claude_client.messages.create(
             model=model,
@@ -67,14 +64,14 @@ def run_assistant_turn(
             ).strip()
             if claims_calendar_success(text):
                 return (
-                    "I didn't change the calendar because no verified calendar "
-                    "write ran. Please try again."
+                    "i didn't change the calendar because no verified calendar "
+                    "write ran. please try again."
                 )
             return text
 
         if tool_calls + len(tool_blocks) > MAX_TOOL_CALLS_PER_TURN:
             return (
-                "That request needs too many calendar operations. Please split it up."
+                "that request needs too many calendar operations. please split it up."
             )
         tool_calls += len(tool_blocks)
         transcript.append({"role": "assistant", "content": response.content})
@@ -87,7 +84,7 @@ def run_assistant_turn(
                 run_tool_batch([(block.name, dict(block.input)) for block in mutations])
             )
             return execution.user_reply or (
-                "I couldn't verify those calendar changes. Please try again."
+                "i couldn't verify those calendar changes. please try again."
             )
 
         tool_results = []
@@ -109,7 +106,7 @@ def run_assistant_turn(
 
             if execution.halt:
                 return execution.user_reply or (
-                    "I couldn't verify that calendar change. Please try again."
+                    "i couldn't verify that calendar change. please try again."
                 )
             tool_results.append(
                 {
@@ -121,4 +118,4 @@ def run_assistant_turn(
 
         transcript.append({"role": "user", "content": tool_results})
 
-    return "That took too many steps. Please rephrase it as a smaller request."
+    return "that took too many steps. please rephrase it as a smaller request."

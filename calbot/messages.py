@@ -8,7 +8,7 @@ import re
 
 log = logging.getLogger("assistant-bot")
 _CONVERSATIONAL_FALLBACK = (
-    "I couldn't turn that into a clear calendar answer. Please ask me again."
+    "i couldn't turn that into a clear calendar answer. please ask me again."
 )
 _NON_CONVERSATIONAL_OUTPUT = re.compile(
     r"(?:"

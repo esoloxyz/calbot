@@ -59,8 +59,8 @@ Then test `/start`, `/today`, and a calendar change.
 ## Calendar change example
 
 ```text
-User: Dinner at Lilia Saturday at 8
-Bot:  Done — Dinner at Lilia is on the calendar.
+user: dinner at lilia saturday, august 1 at 8
+bot:  done. dinner at lilia is on the calendar for saturday, august 1 from 8pm to 10pm.
 ```
 
 Clear add, update, and delete requests run immediately. When an important detail

@@ -17,10 +17,13 @@ from telegram.ext import (
     filters,
 )
 
-from calbot.calendar.client import TOOLS as CALENDAR_TOOLS, CalendarClient
+from calbot.calendar.client import CalendarClient
+from calbot.calendar.contracts import TOOLS as CALENDAR_TOOLS
 from calbot.calendar.digest import create_calendar_digest
+from calbot.concurrency import BlockingBridge
+from calbot.config import BotConfig
 from calbot.messages import visible_reply_text
-from calbot.runtime import BlockingBridge, BotConfig, BotRuntime
+from calbot.runtime import BotRuntime
 
 
 log = logging.getLogger("assistant-bot")
@@ -115,7 +118,7 @@ async def _ask(
     user = update.effective_user
     if user is None:
         return None
-    reply = await bridge.run(
+    return await bridge.run(
         runtime.ask,
         chat_id=update.effective_chat.id,
         user_id=user.id,
@@ -123,7 +126,6 @@ async def _ask(
         sender_display_name=user.first_name or "",
         request_id=request_id,
     )
-    return visible_reply_text(reply)
 
 
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -168,30 +170,40 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _reply_in_chunks(message, reply)
     except Exception:
         log.exception("Assistant turn failed")
-        await message.reply_text("I hit an error. Please try again in a moment.")
+        await _reply_in_chunks(
+            message,
+            "i hit an error. please try again in a moment.",
+        )
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, config, _ = _components(context)
     if not _authorized(update, config):
         chat_id = update.effective_chat.id if update.effective_chat else "unknown"
-        await update.message.reply_text(
-            f"This chat or user isn't authorized. Chat ID: {chat_id}"
+        await _reply_in_chunks(
+            update.message,
+            f"this chat or user isn't authorized. chat id: {chat_id}",
         )
         return
-    await update.message.reply_text(
-        f"Hey {config.bot_owner}! I manage this group's shared calendar.\n\n"
-        "Try “Dinner at Lilia Saturday at 8,” “What do we have this weekend?” "
-        "or “Move Friday dinner to 7:30.”\n\n"
-        "Clear requests are added, updated, or removed right away. If something "
-        "important is unclear, I'll ask one quick question first.\n\n"
-        "Commands: /today  /week  /weekend"
+    await _reply_in_chunks(
+        update.message,
+        (
+            f"hey {config.bot_owner}! i manage this group's shared calendar.\n\n"
+            "try “dinner at lilia saturday at 8,” “what do we have this weekend?” "
+            "or “move friday dinner to 7:30.”\n\n"
+            "clear requests are added, updated, or removed right away. if something "
+            "important is unclear, i'll ask one quick question first.\n\n"
+            "commands: /today  /week  /weekend"
+        ).lower(),
     )
 
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.effective_chat:
-        await update.message.reply_text(f"Chat ID: {update.effective_chat.id}")
+        await _reply_in_chunks(
+            update.message,
+            f"chat id: {update.effective_chat.id}",
+        )
 
 
 def _weekend_window(now: datetime) -> tuple[datetime, datetime]:
@@ -231,8 +243,9 @@ async def _run_digest_command(
         await _reply_in_chunks(update.message, reply)
     except Exception:
         log.exception("Calendar digest command failed")
-        await update.message.reply_text(
-            f"I couldn't load your {label}. Please try again."
+        await _reply_in_chunks(
+            update.message,
+            f"i couldn't load your {label}. please try again.",
         )
 
 
@@ -304,9 +317,10 @@ async def scheduled_digest(context: ContextTypes.DEFAULT_TYPE):
         await _send_in_chunks(context.bot, config.allowed_chat_id, reply)
     except Exception:
         log.exception("Scheduled digest failed")
-        await context.bot.send_message(
-            chat_id=config.allowed_chat_id,
-            text=f"I couldn't load your {label}. Please try /week.",
+        await _send_in_chunks(
+            context.bot,
+            config.allowed_chat_id,
+            f"i couldn't load your {label}. please try /week.",
         )
 
 
@@ -345,7 +359,7 @@ def main() -> None:
     configure_logging()
     app = create_application()
     log.info("Bot starting (polling)…")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=["message"])
 
 
 if __name__ == "__main__":

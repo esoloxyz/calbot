@@ -42,7 +42,8 @@ class CalendarDigestTests(unittest.TestCase):
             "America/New_York",
         )
 
-        self.assertIn("Mon, Jul 13 at 7:00 PM — Dinner", reply)
+        self.assertEqual(reply, reply.lower())
+        self.assertIn("mon, jul 13 at 7:00 pm — dinner", reply)
         self.assertEqual(calendar.calls, [(START.isoformat(), END.isoformat(), "")])
 
     def test_summary_includes_every_event(self):
@@ -61,8 +62,8 @@ class CalendarDigestTests(unittest.TestCase):
             "America/New_York",
         )
 
-        self.assertIn("Dentist", reply)
-        self.assertIn("Flight", reply)
+        self.assertIn("dentist", reply)
+        self.assertIn("flight", reply)
 
     def test_duplicate_titles_keep_distinct_times(self):
         calendar = FakeCalendar(
@@ -80,9 +81,9 @@ class CalendarDigestTests(unittest.TestCase):
             "America/New_York",
         )
 
-        self.assertEqual(reply.count("Lunch"), 2)
-        self.assertIn("12:00 PM", reply)
-        self.assertIn("8:00 PM", reply)
+        self.assertEqual(reply.count("lunch"), 2)
+        self.assertIn("12:00 pm", reply)
+        self.assertIn("8:00 pm", reply)
 
     def test_empty_calendar_still_produces_a_digest(self):
         reply = create_calendar_digest(
@@ -95,7 +96,7 @@ class CalendarDigestTests(unittest.TestCase):
 
         self.assertEqual(
             reply,
-            "Your week-ahead summary is clear — nothing is scheduled.",
+            "your week-ahead summary is clear — nothing is scheduled.",
         )
 
     def test_fetches_all_pages_before_formatting(self):
@@ -132,8 +133,8 @@ class CalendarDigestTests(unittest.TestCase):
             "America/New_York",
         )
 
-        self.assertIn("First page meeting", reply)
-        self.assertIn("Second page dinner", reply)
+        self.assertIn("first page meeting", reply)
+        self.assertIn("second page dinner", reply)
         self.assertEqual(
             calendar.calls,
             [
@@ -167,8 +168,8 @@ class CalendarDigestTests(unittest.TestCase):
         )
 
         self.assertEqual(len(calendar.calls), 2)
-        self.assertIn("Only fetched event", reply)
-        self.assertIn("More events may exist", reply)
+        self.assertIn("only fetched event", reply)
+        self.assertIn("more events may exist", reply)
 
     def test_stops_at_event_cap_and_generated_reply_cannot_hide_truncation(self):
         pages = {}
@@ -196,9 +197,9 @@ class CalendarDigestTests(unittest.TestCase):
         )
 
         self.assertEqual(len(calendar.calls), 4)
-        self.assertNotIn("Event 200", reply)
+        self.assertNotIn("event 200", reply)
         self.assertIn(f"first {MAX_DIGEST_EVENTS} events", reply)
-        self.assertIn("More events may exist", reply)
+        self.assertIn("more events may exist", reply)
 
     def test_rendered_digest_is_bounded_and_discloses_omitted_fetched_events(self):
         calendar = FakeCalendar(

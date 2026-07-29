@@ -28,24 +28,41 @@ or any non-calendar integrations.
 
 Edit [`PERSONALITY.md`](PERSONALITY.md) to define Calbot's voice. Its contents
 are loaded when the bot starts, so restart or redeploy Calbot after changing it.
-Personality guidance controls tone only and cannot override calendar scope,
-access controls, immediate writes, or conversational-output safeguards.
+Personality guidance controls model-generated tone only and cannot override
+calendar scope, access controls, immediate writes, or conversational-output
+safeguards. Verified write confirmations remain deterministic so the bot cannot
+invent a successful calendar change.
 
 ## How it works
 
 ```text
-Telegram message
+Telegram adapter
       |
       v
-Claude calendar tool loop
+Conversation runtime ----> Claude tool loop ----> calendar reads
       |
-      +----> calendar read
+      v
+Mutation executor ----> validation + version check ----> Google Calendar
       |
-      +----> validate change ----> Google Calendar write ----> friendly confirmation
+      v
+Verified conversational confirmation
 ```
 
 Writes use deterministic request IDs and duplicate checks so retrying the same
 Telegram message does not create another copy.
+
+The package is organized by responsibility:
+
+| Module | Responsibility |
+|---|---|
+| `calbot/telegram_app.py` | Telegram handlers, authorization, and scheduled jobs |
+| `calbot/runtime.py` | Conversation history and bounded assistant orchestration |
+| `calbot/mutations.py` | Immediate validation and verified mutation execution |
+| `calbot/calendar/contracts.py` | Canonical tool schemas and field limits |
+| `calbot/calendar/client.py` | Google Calendar API reads and writes |
+| `calbot/assistant/` | Tool loop, policy, execution results, and reply safeguards |
+| `calbot/config.py` | Environment parsing and validation |
+| `calbot/personality.py` | Bounded loading of `PERSONALITY.md` |
 
 ## Run locally
 

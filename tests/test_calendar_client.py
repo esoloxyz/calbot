@@ -482,6 +482,9 @@ class CalendarListAndUpdateTests(unittest.TestCase):
         result = json.loads(calendar_with(api).update_event("trip", start="2026-08-01"))
 
         self.assertEqual(result["status"], "updated")
+        self.assertEqual(result["start"], "2026-08-01")
+        self.assertEqual(result["end"], "2026-08-04")
+        self.assertTrue(result["all_day"])
         body = api.update_calls[0]["body"]
         self.assertEqual(body["start"], {"date": "2026-08-01"})
         self.assertEqual(body["end"], {"date": "2026-08-04"})
@@ -498,11 +501,16 @@ class CalendarListAndUpdateTests(unittest.TestCase):
             }
         )
 
-        calendar_with(api).update_event("dinner", start="2026-07-19T20:00:00-04:00")
+        result = json.loads(
+            calendar_with(api).update_event("dinner", start="2026-07-19T20:00:00-04:00")
+        )
 
         body = api.update_calls[0]["body"]
         self.assertEqual(body["start"]["dateTime"], "2026-07-19T20:00:00-04:00")
         self.assertEqual(body["end"]["dateTime"], "2026-07-19T22:00:00-04:00")
+        self.assertEqual(result["start"], "2026-07-19T20:00:00-04:00")
+        self.assertEqual(result["end"], "2026-07-19T22:00:00-04:00")
+        self.assertFalse(result["all_day"])
 
     def test_update_rolls_same_date_midnight_into_the_next_day(self):
         api = FakeEventsApi(

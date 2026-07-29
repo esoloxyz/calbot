@@ -242,6 +242,10 @@ class CalendarClient:
                 "start": event.get("start", {}).get(
                     "dateTime", event.get("start", {}).get("date", "")
                 ),
+                "end": event.get("end", {}).get(
+                    "dateTime", event.get("end", {}).get("date", "")
+                ),
+                "all_day": "date" in event.get("start", {}),
                 "link": event.get("htmlLink", ""),
             }
         )
@@ -492,6 +496,8 @@ class CalendarClient:
                 "id": created["id"],
                 "title": title,
                 "start": start,
+                "end": end,
+                "all_day": all_day,
                 "link": created.get("htmlLink", ""),
             }
         )
@@ -695,7 +701,18 @@ class CalendarClient:
         if expected_etag and hasattr(request, "headers"):
             request.headers["If-Match"] = expected_etag
         updated = request.execute()
-        return json.dumps({"status": "updated", "id": updated["id"]})
+        updated_start = updated.get("start", {})
+        updated_end = updated.get("end", {})
+        return json.dumps(
+            {
+                "status": "updated",
+                "id": updated["id"],
+                "title": updated.get("summary", "(no title)"),
+                "start": updated_start.get("dateTime", updated_start.get("date", "")),
+                "end": updated_end.get("dateTime", updated_end.get("date", "")),
+                "all_day": "date" in updated_start,
+            }
+        )
 
     def delete_event(self, event_id: str, *, expected_etag: str = "") -> str:
         if expected_etag:

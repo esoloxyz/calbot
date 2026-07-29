@@ -277,7 +277,7 @@ web, make payments, order food, manage wallets, or call any non-calendar service
             return ToolExecutionResult(
                 output=json.dumps({"error": "Too many calendar changes"}),
                 user_reply=(
-                    f"Please limit one request to {MAX_CALENDAR_BATCH_ACTIONS} "
+                    f"please limit one request to {MAX_CALENDAR_BATCH_ACTIONS} "
                     "calendar changes."
                 ),
                 halt=True,
@@ -302,8 +302,8 @@ web, make payments, order food, manage wallets, or call any non-calendar service
                     exc,
                 )
                 replies.append(
-                    "I couldn't make one calendar change because its date or time "
-                    "didn't make sense. Please ask me to try that one again."
+                    "i couldn't make one calendar change because its date or time "
+                    "didn't make sense. please ask me to try that one again."
                 )
                 outcomes.append("validation_failed")
                 continue
@@ -315,8 +315,8 @@ web, make payments, order food, manage wallets, or call any non-calendar service
                     len(actions),
                 )
                 replies.append(
-                    "I couldn't load the calendar details needed for one change. "
-                    "Please ask me to try that one again."
+                    "i couldn't load the calendar details needed for one change. "
+                    "please ask me to try that one again."
                 )
                 outcomes.append("preparation_failed")
                 continue
@@ -333,7 +333,7 @@ web, make payments, order food, manage wallets, or call any non-calendar service
                 self._reply_args(action),
                 output,
             )
-            replies.append(reply or "I couldn't verify that calendar change.")
+            replies.append(reply or "i couldn't verify that calendar change.")
             try:
                 result = json.loads(output)
             except (TypeError, json.JSONDecodeError):
@@ -359,7 +359,11 @@ web, make payments, order food, manage wallets, or call any non-calendar service
         args = dict(action["args"])
         preview = action["preview"]
         if action["name"] != "create_event":
-            args["title"] = preview.get("current_event", {}).get("title", "the event")
+            current_event = preview.get("current_event", {})
+            args.setdefault("title", current_event.get("title", "the event"))
+            args.setdefault("start", current_event.get("start", ""))
+            args.setdefault("end", current_event.get("end", ""))
+            args.setdefault("all_day", "T" not in str(args.get("start", "")))
         return args
 
     def ask(

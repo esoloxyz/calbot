@@ -120,7 +120,10 @@ class BotRuntimeTests(unittest.TestCase):
             request_id="telegram:-100123:42",
         )
 
-        self.assertEqual(reply, "Done — Dinner is on the calendar.")
+        self.assertEqual(
+            reply,
+            "done. dinner is on the calendar for tuesday, july 28 from 7pm to 9pm.",
+        )
         self.assertNotIn("approve", reply.casefold())
         self.assertEqual(len(runtime.cal.calls), 1)
         self.assertEqual(
@@ -159,8 +162,8 @@ class BotRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(len(runtime.cal.calls), 2)
-        self.assertIn("Dinner", reply)
-        self.assertIn("Brunch", reply)
+        self.assertIn("dinner", reply)
+        self.assertIn("brunch", reply)
         self.assertNotIn("approve", reply.casefold())
 
     def test_sarahs_four_event_request_executes_as_one_batch(self):
@@ -212,7 +215,7 @@ class BotRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(len(runtime.cal.calls), 4)
-        self.assertEqual(reply.count("Done —"), 4)
+        self.assertEqual(reply.count("done."), 4)
         self.assertNotIn("{", reply)
         self.assertNotIn("approve", reply.casefold())
 
@@ -257,7 +260,10 @@ class BotRuntimeTests(unittest.TestCase):
         self.assertEqual(len(runtime.cal.calls), 1)
         self.assertEqual(runtime.cal.calls[0][1]["title"], "Dinner")
         self.assertIn("couldn't make one calendar change", reply)
-        self.assertIn("Done — Dinner is on the calendar.", reply)
+        self.assertIn(
+            "done. dinner is on the calendar for sunday, august 30 from 7pm to 9pm.",
+            reply,
+        )
 
     def test_configuration_is_calendar_only(self):
         parsed = BotConfig.from_env(

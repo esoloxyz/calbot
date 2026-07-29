@@ -56,21 +56,16 @@ Create or select a Railway service and add:
 Deploy the repository and confirm the logs contain `Bot starting (polling)…`.
 Then test `/start`, `/today`, and a calendar change.
 
-## Approval example
+## Calendar change example
 
 ```text
 User: Dinner at Lilia Saturday at 8
-Bot:  Calendar change awaiting approval:
-      • Add “Dinner at Lilia” (...)
-
-      Reply approve to continue.
-User: approve
 Bot:  Done — Dinner at Lilia is on the calendar.
 ```
 
-Only the person who requested the change can approve it. The approval expires
-after ten minutes, is consumed once, and is cancelled by that person's next
-unrelated message.
+Clear add, update, and delete requests run immediately. When an important detail
+is genuinely ambiguous, Calbot asks one concise follow-up question before
+changing the calendar.
 
 ## Scheduled summaries
 

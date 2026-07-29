@@ -1,4 +1,4 @@
-"""Bounded Claude tool loop for calendar reads and change proposals."""
+"""Bounded Claude tool loop for calendar reads and verified changes."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def run_assistant_turn(
     max_tool_rounds: int,
     logger=None,
 ) -> str:
-    """Run one model turn while keeping all calendar writes behind approval."""
+    """Run one model turn while keeping calendar writes executor-owned."""
     active_log = logger or log
     transcript = list(messages)
     started_at = time.monotonic()
@@ -87,7 +87,7 @@ def run_assistant_turn(
                 run_tool_batch([(block.name, dict(block.input)) for block in mutations])
             )
             return execution.user_reply or (
-                "Those calendar changes need approval before they can run."
+                "I couldn't verify those calendar changes. Please try again."
             )
 
         tool_results = []
@@ -109,7 +109,7 @@ def run_assistant_turn(
 
             if execution.halt:
                 return execution.user_reply or (
-                    "That calendar change needs approval before it can run."
+                    "I couldn't verify that calendar change. Please try again."
                 )
             tool_results.append(
                 {

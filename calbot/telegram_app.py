@@ -42,12 +42,18 @@ def telegram_chunks(text: str) -> list[str]:
 
 
 async def _reply_in_chunks(message, text: str) -> None:
-    for chunk in telegram_chunks(text):
+    safe_text = visible_reply_text(text)
+    if safe_text is None:
+        return
+    for chunk in telegram_chunks(safe_text):
         await message.reply_text(chunk)
 
 
 async def _send_in_chunks(bot, chat_id: int, text: str) -> None:
-    for chunk in telegram_chunks(text):
+    safe_text = visible_reply_text(text)
+    if safe_text is None:
+        return
+    for chunk in telegram_chunks(safe_text):
         await bot.send_message(chat_id=chat_id, text=chunk)
 
 
@@ -177,8 +183,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Hey {config.bot_owner}! I manage this group's shared calendar.\n\n"
         "Try “Dinner at Lilia Saturday at 8,” “What do we have this weekend?” "
         "or “Move Friday dinner to 7:30.”\n\n"
-        "Every add, update, or delete is previewed first. The person who requested "
-        "it must reply approve.\n\n"
+        "Clear requests are added, updated, or removed right away. If something "
+        "important is unclear, I'll ask one quick question first.\n\n"
         "Commands: /today  /week  /weekend"
     )
 

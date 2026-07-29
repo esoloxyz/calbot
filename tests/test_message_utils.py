@@ -37,6 +37,35 @@ class TelegramMessageBoundaryTests(unittest.TestCase):
             "Your week is clear.",
         )
 
+    def test_raw_calendar_json_is_replaced_with_conversational_fallback(self):
+        raw = (
+            '{"action":"create_event","event":{"title":"Print label",'
+            '"start":"2026-07-24T16:00:00-04:00"}}'
+        )
+
+        reply = visible_reply_text(raw)
+
+        self.assertEqual(
+            reply,
+            "I couldn't turn that into a clear calendar answer. Please ask me again.",
+        )
+        self.assertNotIn("{", reply)
+        self.assertNotIn("create_event", reply)
+
+    def test_code_blocks_and_iso_timestamps_never_reach_telegram(self):
+        for raw in (
+            '```json\n{"status":"created"}\n```',
+            "The event starts at 2026-08-29T18:00:00-04:00.",
+            'The tool returned "event_id": "abc123".',
+            'print("Dinner added")',
+            "status = created",
+        ):
+            with self.subTest(raw=raw):
+                reply = visible_reply_text(raw)
+                self.assertNotEqual(reply, raw)
+                self.assertNotIn("```", reply)
+                self.assertNotIn("2026-08-29T18:00", reply)
+
 
 if __name__ == "__main__":
     unittest.main()

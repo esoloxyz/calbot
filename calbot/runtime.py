@@ -1,4 +1,4 @@
-"""Calendar-only Calbot runtime with explicit approval boundaries."""
+"""Calendar-only Calbot runtime with immediate, verified calendar writes."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,7 +19,6 @@ from calbot.assistant.postconditions import (
     CALENDAR_MUTATION_TOOLS,
     calendar_action_reply,
 )
-from calbot.authorization import PendingAction, PendingActionStore
 from calbot.calendar.client import (
     CALENDAR_FIELD_LIMITS,
     CALENDAR_MUTATION_FIELDS,
@@ -32,7 +30,6 @@ from calbot.messages import build_user_turn
 log = logging.getLogger("assistant-bot")
 MAX_HISTORY_TURNS = 12
 MAX_CALENDAR_BATCH_ACTIONS = 5
-_APPROVAL_ATTEMPT = re.compile(r"^approve\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -153,7 +150,6 @@ class BotRuntime:
         self.tools = list(tools)
         self.max_tool_rounds = max_tool_rounds
         self.history: dict[int, deque] = defaultdict(deque)
-        self.approvals = PendingActionStore()
 
     def _record_history_turn(
         self,
@@ -213,29 +209,6 @@ web, make payments, order food, manage wallets, or call any non-calendar service
             validated[field_name] = value
         return validated
 
-    @staticmethod
-    def _preview_line(name: str, preview: dict) -> str:
-        if name == "create_event":
-            event = preview.get("event", {})
-            title = event.get("title") or "(untitled event)"
-            timing = f"{event.get('start', '?')} → {event.get('end', '?')}"
-            location = f" at {event['location']}" if event.get("location") else ""
-            return f"Add “{title}” ({timing}){location}"
-
-        current = preview.get("current_event", {})
-        title = current.get("title") or "(untitled event)"
-        if name == "delete_event":
-            return (
-                f"Delete “{title}” "
-                f"({current.get('start', '?')} → {current.get('end', '?')})"
-            )
-
-        changes = preview.get("changes", {})
-        rendered = ", ".join(
-            f"{key.replace('_', ' ')} → {value}" for key, value in changes.items()
-        )
-        return f"Update “{title}”: {rendered or 'no changes'}"
-
     def _prepare_action(
         self,
         name: str,
@@ -247,6 +220,9 @@ web, make payments, order food, manage wallets, or call any non-calendar service
         preview = self.cal.preview_mutation(name, validated)
         execution_args = dict(validated)
         if name == "create_event":
+            # The calendar client may repair a same-date midnight end into the
+            # following day while validating the preview.
+            execution_args.update(preview["event"])
             execution_args["_idempotency_key"] = request_id
         else:
             execution_args["_expected_etag"] = preview["event_etag"]
@@ -256,13 +232,11 @@ web, make payments, order food, manage wallets, or call any non-calendar service
             "preview": preview,
         }
 
-    def _propose_actions(
+    def _execute_actions(
         self,
         *,
-        actor: tuple[int, int],
         actions: list[tuple[str, dict]],
         request_id: str,
-        request_text: str,
     ) -> ToolExecutionResult:
         if not actions or len(actions) > MAX_CALENDAR_BATCH_ACTIONS:
             return ToolExecutionResult(
@@ -274,54 +248,74 @@ web, make payments, order food, manage wallets, or call any non-calendar service
                 halt=True,
             )
 
-        try:
-            prepared = [
-                self._prepare_action(
+        replies = []
+        outcomes = []
+        for index, (name, args) in enumerate(actions, start=1):
+            try:
+                action = self._prepare_action(
                     name,
                     args,
                     request_id=f"{request_id}:{index}",
                 )
-                for index, (name, args) in enumerate(actions, start=1)
-            ]
-        except (KeyError, TypeError, ValueError) as exc:
-            return ToolExecutionResult(
-                output=json.dumps({"error": str(exc)}),
-                user_reply=f"I couldn't prepare that calendar change: {exc}",
-                halt=True,
+            except (KeyError, TypeError, ValueError) as exc:
+                log.warning(
+                    "Calendar action rejected before write "
+                    "(action=%s index=%s count=%s): %s",
+                    name,
+                    index,
+                    len(actions),
+                    exc,
+                )
+                replies.append(
+                    "I couldn't make one calendar change because its date or time "
+                    "didn't make sense. Please ask me to try that one again."
+                )
+                outcomes.append("validation_failed")
+                continue
+            except Exception:
+                log.exception(
+                    "Calendar action preparation failed (action=%s index=%s count=%s)",
+                    name,
+                    index,
+                    len(actions),
+                )
+                replies.append(
+                    "I couldn't load the calendar details needed for one change. "
+                    "Please ask me to try that one again."
+                )
+                outcomes.append("preparation_failed")
+                continue
+
+            log.info(
+                "calendar action started (action=%s index=%s count=%s)",
+                name,
+                index,
+                len(actions),
             )
-        except Exception:
-            log.exception("Calendar preview failed")
-            return ToolExecutionResult(
-                output=json.dumps({"error": "Calendar preview failed"}),
-                user_reply=(
-                    "I couldn't load the calendar details needed to preview that "
-                    "change. Please try again."
-                ),
-                halt=True,
+            output = self.cal.run_tool(name, action["args"])
+            reply = calendar_action_reply(
+                name,
+                self._reply_args(action),
+                output,
+            )
+            replies.append(reply or "I couldn't verify that calendar change.")
+            try:
+                result = json.loads(output)
+            except (TypeError, json.JSONDecodeError):
+                result = {}
+            status = result.get("status") if isinstance(result, dict) else None
+            outcomes.append(status or "failed")
+            log.info(
+                "calendar action completed (action=%s index=%s count=%s outcome=%s)",
+                name,
+                index,
+                len(actions),
+                status or "failed",
             )
 
-        lines = [
-            self._preview_line(action["name"], action["preview"]) for action in prepared
-        ]
-        preview_text = "\n".join(f"• {line}" for line in lines)
-        pending = self.approvals.propose(
-            actor=actor,
-            tool_name="_calendar_batch",
-            tool_args={"actions": prepared},
-            preview=preview_text,
-            request_text=request_text[:4000],
-        )
-        label = (
-            "Calendar change awaiting approval:"
-            if len(prepared) == 1
-            else f"{len(prepared)} calendar changes awaiting approval:"
-        )
         return ToolExecutionResult(
-            output=json.dumps({"status": "confirmation_required"}),
-            user_reply=(
-                f"{label}\n{pending.preview}\n\nReply approve to continue. "
-                "Any other message cancels this."
-            ),
+            output=json.dumps({"status": "completed", "outcomes": outcomes}),
+            user_reply="\n".join(replies),
             halt=True,
         )
 
@@ -333,19 +327,6 @@ web, make payments, order food, manage wallets, or call any non-calendar service
             args["title"] = preview.get("current_event", {}).get("title", "the event")
         return args
 
-    def _execute_approved(self, pending: PendingAction) -> str:
-        actions = pending.tool_args.get("actions", [])
-        replies = []
-        for action in actions:
-            output = self.cal.run_tool(action["name"], action["args"])
-            reply = calendar_action_reply(
-                action["name"],
-                self._reply_args(action),
-                output,
-            )
-            replies.append(reply or "I couldn't verify that calendar change.")
-        return "\n".join(replies)
-
     def ask(
         self,
         *,
@@ -355,41 +336,15 @@ web, make payments, order food, manage wallets, or call any non-calendar service
         sender_display_name: str = "",
         request_id: str = "",
     ) -> str:
-        actor = (chat_id, user_id)
-        pending = self.approvals.get(actor)
-        if pending is not None:
-            approved = self.approvals.resolve(actor, user_text)
-            if approved is not None:
-                reply = self._execute_approved(approved)
-                self._record_history_turn(
-                    chat_id,
-                    {
-                        "role": "user",
-                        "content": "The user approved the pending calendar change.",
-                    },
-                    {"role": "assistant", "content": reply},
-                )
-                return reply
-            if _APPROVAL_ATTEMPT.search(user_text.strip()):
-                return (
-                    "That approval was cancelled. When a change is pending, reply "
-                    "with only: approve"
-                )
-
-        if user_text.strip().casefold() == "approve":
-            return "There isn't a calendar change waiting for approval."
-
         user_turn = build_user_turn(user_text, sender_display_name)
         messages = list(self.history[chat_id]) + [user_turn]
         stable_request_id = request_id or f"telegram:{chat_id}:{user_id}"
 
         def run_tool(name: str, args: dict):
             if name in CALENDAR_MUTATION_TOOLS:
-                return self._propose_actions(
-                    actor=actor,
+                return self._execute_actions(
                     actions=[(name, args)],
                     request_id=stable_request_id,
-                    request_text=user_text,
                 )
             if name != "list_events":
                 return json.dumps(
@@ -401,11 +356,9 @@ web, make payments, order food, manage wallets, or call any non-calendar service
             return self.cal.run_tool(name, args)
 
         def run_tool_batch(actions: list[tuple[str, dict]]):
-            return self._propose_actions(
-                actor=actor,
+            return self._execute_actions(
                 actions=actions,
                 request_id=stable_request_id,
-                request_text=user_text,
             )
 
         text = run_assistant_turn(
@@ -419,14 +372,9 @@ web, make payments, order food, manage wallets, or call any non-calendar service
             max_tool_rounds=self.max_tool_rounds,
             logger=log,
         )
-        history_text = (
-            "A calendar change was proposed but has not run."
-            if self.approvals.get(actor) is not None
-            else text or "…"
-        )
         self._record_history_turn(
             chat_id,
             user_turn,
-            {"role": "assistant", "content": history_text},
+            {"role": "assistant", "content": text or "…"},
         )
         return text

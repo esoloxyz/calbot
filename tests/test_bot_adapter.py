@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from calbot.runtime import BotConfig
 from calbot.telegram_app import (
     _authorized,
+    _reply_in_chunks,
     _run_digest_command,
     _weekend_window,
     cmd_start,
@@ -56,6 +57,18 @@ class TelegramBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(_authorized(update_for(user_id=303), config()))
         self.assertFalse(_authorized(update_for(chat_id=-999), config()))
         self.assertFalse(_authorized(update_for(sender_chat=object()), config()))
+
+    async def test_chunk_sender_suppresses_internal_data(self):
+        message = SimpleNamespace(reply_text=AsyncMock())
+
+        await _reply_in_chunks(
+            message,
+            '{"action":"create_event","event":{"title":"Dinner"}}',
+        )
+
+        sent = message.reply_text.await_args.args[0]
+        self.assertIn("clear calendar answer", sent)
+        self.assertNotIn("{", sent)
 
     async def test_unmentioned_message_is_ignored_when_configured(self):
         update = update_for()

@@ -99,7 +99,7 @@ def runtime_with(responses):
 
 
 class BotRuntimeTests(unittest.TestCase):
-    def test_create_is_previewed_then_executed_once(self):
+    def test_create_executes_immediately_and_only_once(self):
         runtime = runtime_with(
             [
                 tool_response(
@@ -113,91 +113,22 @@ class BotRuntimeTests(unittest.TestCase):
             ]
         )
 
-        proposal = runtime.ask(
+        reply = runtime.ask(
             chat_id=-100123,
             user_id=101,
             user_text="Dinner tonight at 7",
             request_id="telegram:-100123:42",
         )
-        approved = runtime.ask(
-            chat_id=-100123,
-            user_id=101,
-            user_text="approve",
-        )
-        replay = runtime.ask(
-            chat_id=-100123,
-            user_id=101,
-            user_text="approve",
-        )
 
-        self.assertIn("Calendar change awaiting approval", proposal)
-        self.assertIn("Dinner", proposal)
-        self.assertEqual(approved, "Done — Dinner is on the calendar.")
-        self.assertEqual(replay, "There isn't a calendar change waiting for approval.")
+        self.assertEqual(reply, "Done — Dinner is on the calendar.")
+        self.assertNotIn("approve", reply.casefold())
         self.assertEqual(len(runtime.cal.calls), 1)
         self.assertEqual(
             runtime.cal.calls[0][1]["_idempotency_key"],
             "telegram:-100123:42:1",
         )
 
-    def test_approval_is_bound_to_requesting_user(self):
-        runtime = runtime_with(
-            [
-                tool_response(
-                    "delete_event",
-                    {"event_id": "event-1"},
-                )
-            ]
-        )
-        runtime.ask(
-            chat_id=-100123,
-            user_id=101,
-            user_text="Delete dinner",
-        )
-
-        other_reply = runtime.ask(
-            chat_id=-100123,
-            user_id=202,
-            user_text="approve",
-        )
-
-        self.assertIn("isn't a calendar change", other_reply)
-        self.assertIsNotNone(runtime.approvals.get((-100123, 101)))
-        self.assertEqual(runtime.cal.calls, [])
-
-    def test_unrelated_message_cancels_pending_change(self):
-        runtime = runtime_with(
-            [
-                tool_response(
-                    "create_event",
-                    {
-                        "title": "Dinner",
-                        "start": "2026-07-28T19:00:00-04:00",
-                        "end": "2026-07-28T21:00:00-04:00",
-                    },
-                ),
-                SimpleNamespace(
-                    stop_reason="end_turn",
-                    content=[SimpleNamespace(type="text", text="Tomorrow is open.")],
-                ),
-            ]
-        )
-        runtime.ask(
-            chat_id=-100123,
-            user_id=101,
-            user_text="Add dinner",
-        )
-
-        reply = runtime.ask(
-            chat_id=-100123,
-            user_id=101,
-            user_text="What about tomorrow?",
-        )
-
-        self.assertEqual(reply, "Tomorrow is open.")
-        self.assertIsNone(runtime.approvals.get((-100123, 101)))
-
-    def test_batch_uses_one_approval_and_executes_each_action(self):
+    def test_batch_executes_each_action_immediately(self):
         runtime = runtime_with(
             [
                 multi_tool_response(
@@ -221,21 +152,112 @@ class BotRuntimeTests(unittest.TestCase):
             ]
         )
 
-        proposal = runtime.ask(
+        reply = runtime.ask(
             chat_id=-100123,
             user_id=101,
             user_text="Add dinner and brunch",
         )
-        approved = runtime.ask(
-            chat_id=-100123,
-            user_id=101,
-            user_text="approve",
+
+        self.assertEqual(len(runtime.cal.calls), 2)
+        self.assertIn("Dinner", reply)
+        self.assertIn("Brunch", reply)
+        self.assertNotIn("approve", reply.casefold())
+
+    def test_sarahs_four_event_request_executes_as_one_batch(self):
+        runtime = runtime_with(
+            [
+                multi_tool_response(
+                    (
+                        "create_event",
+                        {
+                            "title": "Ezra and Sarah away",
+                            "start": "2026-08-08",
+                            "end": "2026-08-11",
+                            "all_day": True,
+                        },
+                    ),
+                    (
+                        "create_event",
+                        {
+                            "title": "Kaufman BBQ",
+                            "start": "2026-08-22T15:00:00-04:00",
+                            "end": "2026-08-22T22:00:00-04:00",
+                        },
+                    ),
+                    (
+                        "create_event",
+                        {
+                            "title": "Alyssa and Drew Wedding",
+                            "start": "2026-08-29T18:00:00-04:00",
+                            "end": "2026-08-30T00:00:00-04:00",
+                        },
+                    ),
+                    (
+                        "create_event",
+                        {
+                            "title": "Eric and Sophie Wedding",
+                            "start": "2026-09-03T18:00:00-04:00",
+                            "end": "2026-09-04T00:00:00-04:00",
+                        },
+                    ),
+                )
+            ]
         )
 
-        self.assertIn("2 calendar changes", proposal)
-        self.assertEqual(len(runtime.cal.calls), 2)
-        self.assertIn("Dinner", approved)
-        self.assertIn("Brunch", approved)
+        reply = runtime.ask(
+            chat_id=-100123,
+            user_id=202,
+            user_text="Add these four events",
+            request_id="telegram:-100123:99",
+        )
+
+        self.assertEqual(len(runtime.cal.calls), 4)
+        self.assertEqual(reply.count("Done —"), 4)
+        self.assertNotIn("{", reply)
+        self.assertNotIn("approve", reply.casefold())
+
+    def test_one_invalid_batch_item_does_not_block_the_valid_items(self):
+        runtime = runtime_with(
+            [
+                multi_tool_response(
+                    (
+                        "create_event",
+                        {
+                            "title": "Invalid event",
+                            "start": "2026-08-29T18:00:00-04:00",
+                            "end": "not a date",
+                        },
+                    ),
+                    (
+                        "create_event",
+                        {
+                            "title": "Dinner",
+                            "start": "2026-08-30T19:00:00-04:00",
+                            "end": "2026-08-30T21:00:00-04:00",
+                        },
+                    ),
+                )
+            ]
+        )
+        original_preview = runtime.cal.preview_mutation
+
+        def preview(name, args):
+            if args.get("title") == "Invalid event":
+                raise ValueError("event end is invalid")
+            return original_preview(name, args)
+
+        runtime.cal.preview_mutation = preview
+
+        reply = runtime.ask(
+            chat_id=-100123,
+            user_id=202,
+            user_text="Add both events",
+        )
+
+        self.assertEqual(len(runtime.cal.calls), 1)
+        self.assertEqual(runtime.cal.calls[0][1]["title"], "Dinner")
+        self.assertIn("couldn't make one calendar change", reply)
+        self.assertIn("Done — Dinner is on the calendar.", reply)
 
     def test_configuration_is_calendar_only(self):
         parsed = BotConfig.from_env(
@@ -258,6 +280,7 @@ class BotRuntimeTests(unittest.TestCase):
 
         self.assertIn("shared Google Calendar", prompt)
         self.assertIn("scope is intentionally narrow", prompt)
+        self.assertIn("ordinary conversational prose", prompt)
         self.assertNotIn("Tempo", prompt)
         self.assertNotIn("DoorDash", prompt)
 

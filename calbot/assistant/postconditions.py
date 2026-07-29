@@ -41,7 +41,12 @@ def calendar_action_reply(name: str, args: dict, output: str) -> str | None:
             "delete_event": "delete",
         }
         destination = " to the calendar" if name == "create_event" else ""
-        return f"I couldn't {verbs[name]} {title}{destination}: {error}"
+        retry = (
+            " It changed while I was working on it, so please ask me again."
+            if result.get("error_code") == "event_changed_before_write"
+            else " Please try again."
+        )
+        return f"I couldn't {verbs[name]} {title}{destination}.{retry}"
 
     status = result.get("status")
     if name == "create_event" and status == "duplicate":

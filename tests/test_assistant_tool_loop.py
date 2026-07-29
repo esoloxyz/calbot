@@ -73,7 +73,7 @@ class AssistantToolLoopTests(unittest.TestCase):
         self.assertEqual(reply, "You have dinner at 7.")
         self.assertIn("Dinner", repr(client.messages.calls[1]["messages"]))
 
-    def test_mutation_halts_at_application_approval(self):
+    def test_mutation_returns_deterministic_execution_reply(self):
         reply, client = self.run_loop(
             [
                 tool_response(
@@ -88,16 +88,16 @@ class AssistantToolLoopTests(unittest.TestCase):
                 )
             ],
             lambda name, args: ToolExecutionResult(
-                output='{"status":"confirmation_required"}',
-                user_reply="Reply approve to continue.",
+                output='{"status":"created"}',
+                user_reply="Done — Dinner is on the calendar.",
                 halt=True,
             ),
         )
 
-        self.assertEqual(reply, "Reply approve to continue.")
+        self.assertEqual(reply, "Done — Dinner is on the calendar.")
         self.assertEqual(len(client.messages.calls), 1)
 
-    def test_multiple_mutations_use_one_batch_proposal(self):
+    def test_multiple_mutations_execute_as_one_batch(self):
         calls = []
 
         reply, _ = self.run_loop(
@@ -124,13 +124,13 @@ class AssistantToolLoopTests(unittest.TestCase):
             lambda name, args: "",
             lambda actions: calls.append(actions)
             or ToolExecutionResult(
-                output='{"status":"confirmation_required"}',
-                user_reply="2 changes need approval.",
+                output='{"status":"created"}',
+                user_reply="Done — Dinner and Brunch are on the calendar.",
                 halt=True,
             ),
         )
 
-        self.assertEqual(reply, "2 changes need approval.")
+        self.assertEqual(reply, "Done — Dinner and Brunch are on the calendar.")
         self.assertEqual(len(calls[0]), 2)
 
     def test_unverified_model_success_is_rejected(self):

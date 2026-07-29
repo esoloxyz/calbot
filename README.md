@@ -17,8 +17,9 @@ Examples:
 - Posts a Friday weekend preview and a Sunday week-ahead summary.
 - Provides `/today`, `/week`, and `/weekend` calendar summaries.
 - Restricts access to one Telegram chat and, optionally, specific users.
-- Previews every calendar write and requires the requesting user to reply
-  `approve` before it runs.
+- Executes clear calendar requests immediately and asks a short follow-up only
+  when an important date, time, or event is ambiguous.
+- Keeps Telegram replies conversational and suppresses internal tool data.
 
 Calbot does not include payments, wallets, paid APIs, web search, food ordering,
 or any non-calendar integrations.
@@ -33,12 +34,11 @@ Claude calendar tool loop
       |
       +----> calendar read
       |
-      +----> change preview ----> exact "approve" ----> Google Calendar write
+      +----> validate change ----> Google Calendar write ----> friendly confirmation
 ```
 
-The approval is one-shot, expires after ten minutes, and is bound to the
-Telegram user who requested the change. Any other message from that person
-cancels it.
+Writes use deterministic request IDs and duplicate checks so retrying the same
+Telegram message does not create another copy.
 
 ## Run locally
 

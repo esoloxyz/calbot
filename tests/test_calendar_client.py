@@ -228,6 +228,35 @@ class CalendarCreateDeduplicationTests(unittest.TestCase):
         self.assertEqual(result["status"], "created")
         self.assertEqual(len(api.insert_calls), 1)
 
+    def test_midnight_end_on_same_date_rolls_into_the_next_day(self):
+        api = FakeEventsApi()
+
+        result = json.loads(
+            calendar_with(api).create_event(
+                title="Alyssa and Drew Wedding",
+                start="2026-08-29T18:00:00-04:00",
+                end="2026-08-29T00:00:00-04:00",
+            )
+        )
+
+        self.assertEqual(result["status"], "created")
+        body = api.insert_calls[0]["body"]
+        self.assertEqual(body["start"]["dateTime"], "2026-08-29T18:00:00-04:00")
+        self.assertEqual(body["end"]["dateTime"], "2026-08-30T00:00:00-04:00")
+
+    def test_tool_schema_explains_cross_midnight_and_all_day_end_dates(self):
+        create_schema = next(tool for tool in TOOLS if tool["name"] == "create_event")
+        start_description = create_schema["input_schema"]["properties"]["start"][
+            "description"
+        ]
+        end_description = create_schema["input_schema"]["properties"]["end"][
+            "description"
+        ]
+
+        self.assertIn("first included", start_description)
+        self.assertIn("following calendar day", end_description)
+        self.assertIn("exclusive", end_description)
+
     def test_all_day_duplicate_is_not_created(self):
         api = FakeEventsApi(
             listed=[
@@ -475,6 +504,30 @@ class CalendarListAndUpdateTests(unittest.TestCase):
         self.assertEqual(body["start"]["dateTime"], "2026-07-19T20:00:00-04:00")
         self.assertEqual(body["end"]["dateTime"], "2026-07-19T22:00:00-04:00")
 
+    def test_update_rolls_same_date_midnight_into_the_next_day(self):
+        api = FakeEventsApi(
+            fetched={
+                "id": "wedding",
+                "etag": "etag-v1",
+                "summary": "Wedding",
+                "start": {"dateTime": "2026-08-29T18:00:00-04:00"},
+                "end": {"dateTime": "2026-08-29T22:00:00-04:00"},
+            }
+        )
+
+        result = json.loads(
+            calendar_with(api).update_event(
+                "wedding",
+                expected_etag="etag-v1",
+                start="2026-08-29T18:00:00-04:00",
+                end="2026-08-29T00:00:00-04:00",
+            )
+        )
+
+        self.assertEqual(result["status"], "updated")
+        body = api.update_calls[0]["body"]
+        self.assertEqual(body["end"]["dateTime"], "2026-08-30T00:00:00-04:00")
+
     def test_switching_event_kind_requires_both_bounds(self):
         api = FakeEventsApi(
             fetched={
@@ -553,7 +606,7 @@ class CalendarListAndUpdateTests(unittest.TestCase):
         self.assertIn("end must be after start", result["error"])
         self.assertEqual(api.update_calls, [])
 
-    def test_stale_approval_cannot_update_a_changed_event(self):
+    def test_changed_event_cannot_be_updated_with_a_stale_version(self):
         api = FakeEventsApi(
             fetched={
                 "id": "dinner",
@@ -575,10 +628,10 @@ class CalendarListAndUpdateTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result["error_code"], "event_changed_since_approval")
+        self.assertEqual(result["error_code"], "event_changed_before_write")
         self.assertEqual(api.update_calls, [])
 
-    def test_stale_approval_cannot_delete_a_changed_event(self):
+    def test_changed_event_cannot_be_deleted_with_a_stale_version(self):
         api = FakeEventsApi(
             fetched={
                 "id": "dinner",
@@ -596,7 +649,7 @@ class CalendarListAndUpdateTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result["error_code"], "event_changed_since_approval")
+        self.assertEqual(result["error_code"], "event_changed_before_write")
         self.assertEqual(api.delete_calls, [])
 
     def test_update_dispatch_does_not_mutate_tool_arguments(self):

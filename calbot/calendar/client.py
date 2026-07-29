@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import unicodedata
@@ -15,6 +16,7 @@ from google_auth_httplib2 import AuthorizedHttp
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
+log = logging.getLogger("assistant-bot")
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 MAX_LIST_EVENTS = 50
 MAX_LIST_TOTAL_EVENTS = 200
@@ -61,14 +63,21 @@ CALENDAR_FIELD_SCHEMAS = {
     "start": {
         "type": "string",
         "maxLength": CALENDAR_FIELD_LIMITS["start"],
-        "description": "RFC3339 datetime, e.g. 2026-07-11T20:00:00-04:00",
+        "description": (
+            "RFC3339 datetime for a timed event, or the first included YYYY-MM-DD "
+            "date for an all-day event."
+        ),
     },
     "end": {
         "type": "string",
         "maxLength": CALENDAR_FIELD_LIMITS["end"],
         "description": (
-            "RFC3339 datetime. If the user didn't specify, default to 1-2 hours "
-            "after start."
+            "RFC3339 datetime, or an exclusive end date for an all-day event. "
+            "Midnight after an evening event belongs to the following calendar "
+            "day: 6 PM–12 AM on August 29 ends at "
+            "2026-08-30T00:00:00-04:00. For an all-day range through August 10, "
+            "use the exclusive end date August 11. If the user didn't specify an "
+            "end, default to 1-2 hours after start."
         ),
     },
     "location": {
@@ -147,6 +156,30 @@ class CalendarClient:
             datetime.combine(date.fromisoformat(start), time.min, timezone),
             datetime.combine(date.fromisoformat(end), time.min, timezone),
         )
+
+    def _normalize_create_bounds(
+        self,
+        start: str,
+        end: str,
+        all_day: bool,
+    ) -> tuple[str, str]:
+        """Repair the common 6 PM–12 AM same-date representation."""
+        if all_day or self._is_all_day_value(start) or self._is_all_day_value(end):
+            return start, end
+
+        start_value, end_value = self._timed_bounds(start, end)
+        if (
+            end_value <= start_value
+            and end_value.date() == start_value.date()
+            and end_value.hour == 0
+            and end_value.minute == 0
+            and end_value.second == 0
+            and end_value.microsecond == 0
+        ):
+            end_value += timedelta(days=1)
+            log.info("Moved a same-date midnight event end to the following day")
+            return start, end_value.isoformat()
+        return start, end
 
     def _validate_create_event(
         self,
@@ -410,6 +443,7 @@ class CalendarClient:
         all_day: bool = False,
         idempotency_key: str = "",
     ) -> str:
+        start, end = self._normalize_create_bounds(start, end, all_day)
         self._validate_create_event(
             title, start, end, all_day, location=location, description=description
         )
@@ -465,18 +499,27 @@ class CalendarClient:
     def preview_mutation(self, name: str, args: dict) -> dict:
         """Return user-reviewable data without performing a calendar write."""
         if name == "create_event":
-            self._validate_create_event(
-                args["title"],
+            start, end = self._normalize_create_bounds(
                 args["start"],
                 args["end"],
+                args.get("all_day", False),
+            )
+            self._validate_create_event(
+                args["title"],
+                start,
+                end,
                 args.get("all_day", False),
                 location=args.get("location", ""),
                 description=args.get("description", ""),
             )
+            normalized = dict(args)
+            normalized.update({"start": start, "end": end})
             return {
                 "action": name,
                 "event": {
-                    key: value for key, value in args.items() if not key.startswith("_")
+                    key: value
+                    for key, value in normalized.items()
+                    if not key.startswith("_")
                 },
             }
         if name not in {"update_event", "delete_event"}:
@@ -577,6 +620,19 @@ class CalendarClient:
         else:
             raise ValueError("changing event type requires both start and end")
 
+        if (
+            new_end <= new_start
+            and isinstance(new_start, datetime)
+            and isinstance(new_end, datetime)
+            and new_end.date() == new_start.date()
+            and new_end.hour == 0
+            and new_end.minute == 0
+            and new_end.second == 0
+            and new_end.microsecond == 0
+        ):
+            new_end += timedelta(days=1)
+            log.info("Moved a same-date midnight event update to the following day")
+
         if new_end <= new_start:
             raise ValueError("event end must be after start")
 
@@ -610,10 +666,10 @@ class CalendarClient:
             return json.dumps(
                 {
                     "error": (
-                        "The event changed after it was previewed. Review it again "
-                        "before approving an update."
+                        "The event changed while I was working on it. Please ask me "
+                        "to update it again."
                     ),
-                    "error_code": "event_changed_since_approval",
+                    "error_code": "event_changed_before_write",
                 }
             )
         if "title" in fields:
@@ -652,10 +708,10 @@ class CalendarClient:
                 return json.dumps(
                     {
                         "error": (
-                            "The event changed after it was previewed. Review it "
-                            "again before approving deletion."
+                            "The event changed while I was working on it. Please ask "
+                            "me to delete it again."
                         ),
-                        "error_code": "event_changed_since_approval",
+                        "error_code": "event_changed_before_write",
                     }
                 )
         request = self.service.events().delete(

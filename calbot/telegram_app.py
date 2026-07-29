@@ -1,4 +1,4 @@
-"""Telegram adapter and application factory for Calbot."""
+"""Telegram adapter and application factory for calendar-only Calbot."""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ from calbot.calendar.client import TOOLS as CALENDAR_TOOLS, CalendarClient
 from calbot.calendar.digest import create_calendar_digest
 from calbot.messages import visible_reply_text
 from calbot.runtime import BlockingBridge, BotConfig, BotRuntime
-from calbot.tempo.client import TEMPO_TOOLS, TempoClient
 
 
 log = logging.getLogger("assistant-bot")
@@ -62,7 +61,7 @@ def configure_logging() -> None:
 
 
 def create_runtime(config: BotConfig) -> BotRuntime:
-    """Build concrete API clients only after validated configuration is loaded."""
+    """Build the two external clients Calbot actually needs."""
     claude = anthropic.Anthropic(
         api_key=config.anthropic_api_key,
         timeout=30.0,
@@ -73,20 +72,11 @@ def create_runtime(config: BotConfig) -> BotRuntime:
         calendar_id=config.calendar_id,
         timezone_name=config.timezone,
     )
-    tempo = TempoClient(
-        bin_path=config.tempo_bin,
-        tempo_home=config.tempo_home,
-        max_spend=config.tempo_max_spend,
-        auto_spend=config.tempo_auto_spend,
-        rpc_url=config.tempo_rpc_url,
-    )
-    tempo.prepare_wallet(config.tempo_wallet_store_b64, required=True)
     return BotRuntime(
         config=config,
         claude_client=claude,
         calendar_client=calendar,
-        tempo_client=tempo,
-        tools=CALENDAR_TOOLS + TEMPO_TOOLS,
+        tools=CALENDAR_TOOLS,
     )
 
 
@@ -104,8 +94,6 @@ def _authorized(update: Update, config: BotConfig) -> bool:
     if (
         message is not None and getattr(message, "sender_chat", None) is not None
     ) or update.effective_user.id == ANONYMOUS_ADMIN_USER_ID:
-        # Telegram collapses anonymous admins onto one shared synthetic user ID;
-        # it cannot safely identify the actor for one-shot approvals.
         return False
     return config.actor_allowed(update.effective_user.id)
 
@@ -137,8 +125,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update, config) or not update.message or not update.message.text:
         return
 
-    msg = update.message
-    text = msg.text.strip()
+    message = update.message
+    text = message.text.strip()
     if not config.respond_to_all:
         username = context.bot.username or ""
         mention_pattern = (
@@ -148,9 +136,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         mentioned = bool(mention_pattern and mention_pattern.search(text))
         is_reply_to_bot = bool(
-            msg.reply_to_message
-            and msg.reply_to_message.from_user
-            and msg.reply_to_message.from_user.id == context.bot.id
+            message.reply_to_message
+            and message.reply_to_message.from_user
+            and message.reply_to_message.from_user.id == context.bot.id
         )
         if not (mentioned or is_reply_to_bot):
             return
@@ -160,7 +148,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     await context.bot.send_chat_action(
-        chat_id=msg.chat_id,
+        chat_id=message.chat_id,
         action=ChatAction.TYPING,
     )
     try:
@@ -168,13 +156,13 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update,
             context,
             text,
-            request_id=f"telegram:{msg.chat_id}:{msg.message_id}",
+            request_id=f"telegram:{message.chat_id}:{message.message_id}",
         )
         if reply:
-            await _reply_in_chunks(msg, reply)
+            await _reply_in_chunks(message, reply)
     except Exception:
         log.exception("Assistant turn failed")
-        await msg.reply_text("Hit an error — try again in a sec.")
+        await message.reply_text("I hit an error. Please try again in a moment.")
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -186,13 +174,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     await update.message.reply_text(
-        f"Hey {config.bot_owner}! I'm your personal assistant. I can:\n\n"
-        '• Manage your calendar — "dinner at Lilia saturday 8pm"\n'
-        '• Use Tempo services — "generate an image of a sunset"\n'
-        "• Answer questions and help with anything else\n\n"
-        "Calendar changes and external requests require a one-shot approval.\n"
-        "Just reply approve when prompted.\n\n"
-        "Commands: /weekend  /week  /today  /balance"
+        f"Hey {config.bot_owner}! I manage this group's shared calendar.\n\n"
+        "Try “Dinner at Lilia Saturday at 8,” “What do we have this weekend?” "
+        "or “Move Friday dinner to 7:30.”\n\n"
+        "Every add, update, or delete is previewed first. The person who requested "
+        "it must reply approve.\n\n"
+        "Commands: /today  /week  /weekend"
     )
 
 
@@ -201,49 +188,7 @@ async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Chat ID: {update.effective_chat.id}")
 
 
-async def _run_command_prompt(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    prompt: str,
-) -> None:
-    _, config, _ = _components(context)
-    if not _authorized(update, config):
-        return
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action=ChatAction.TYPING,
-    )
-    try:
-        reply = await _ask(update, context, prompt)
-        if reply:
-            await _reply_in_chunks(update.message, reply)
-    except Exception:
-        log.exception("Command assistant turn failed")
-        await update.message.reply_text("Hit an error — try again in a sec.")
-
-
-async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    runtime, config, bridge = _components(context)
-    if not _authorized(update, config):
-        return
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action=ChatAction.TYPING,
-    )
-    try:
-        reply = await bridge.run(runtime.wallet_balance_reply)
-        if reply:
-            await _reply_in_chunks(update.message, reply)
-    except Exception:
-        log.exception("Wallet balance command failed")
-        await update.message.reply_text(
-            "I couldn't load the Tempo wallet status. Please try again."
-        )
-
-
 def _weekend_window(now: datetime) -> tuple[datetime, datetime]:
-    # Monday-Thursday target the coming Friday; Friday-Sunday stay within the
-    # current weekend instead of jumping a full week ahead.
     days_to_friday = 4 - now.weekday()
     friday = (now + timedelta(days=days_to_friday)).replace(
         hour=0,
@@ -287,15 +232,8 @@ async def _run_digest_command(
 
 async def cmd_weekend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, config, _ = _components(context)
-    now = datetime.now(config.tz)
-    start, end = _weekend_window(now)
-    await _run_digest_command(
-        update,
-        context,
-        "weekend preview",
-        start,
-        end,
-    )
+    start, end = _weekend_window(datetime.now(config.tz))
+    await _run_digest_command(update, context, "weekend preview", start, end)
 
 
 async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -379,7 +317,6 @@ def create_application(
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("id", cmd_id))
-    app.add_handler(CommandHandler("balance", cmd_balance))
     app.add_handler(CommandHandler("weekend", cmd_weekend))
     app.add_handler(CommandHandler("week", cmd_week))
     app.add_handler(CommandHandler("today", cmd_today))

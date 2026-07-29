@@ -1,10 +1,9 @@
-"""Claude tool loop with verified calendar action confirmations."""
+"""Bounded Claude tool loop for calendar reads and change proposals."""
 
 from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from collections.abc import Callable
 
@@ -14,28 +13,21 @@ from calbot.assistant.execution import (
 )
 from calbot.assistant.postconditions import (
     CALENDAR_MUTATION_TOOLS,
-    _CALENDAR_READ_INTENT,
-    _CALENDAR_SUBJECT,
-    _EXTERNAL_ACTION_SUBJECT,
-    _TASK_STATUS_INTENT,
-    _calendar_action_key,
-    _clearly_reports_no_action_or_asks,
-    _generic_calendar_acknowledgement,
-    _latest_user_text,
-    _requests_side_effect,
-    _successful_object_result,
-    _verified_side_effect_success,
-    calendar_action_reply,
+    calendar_action_reply as calendar_action_reply,
     claims_calendar_success as claims_calendar_success,
-    claims_unverified_side_effect_success,
 )
 
 
 log = logging.getLogger("assistant-bot")
-
 MAX_TOOL_CALLS_PER_TURN = 8
 MAX_TOOL_RESULT_CHARS_PER_TURN = 64 * 1024
-MAX_ASSISTANT_TURN_SECONDS = 150
+MAX_ASSISTANT_TURN_SECONDS = 120
+
+
+def _as_execution(value) -> ToolExecutionResult:
+    if isinstance(value, ToolExecutionResult):
+        return value
+    return ToolExecutionResult(output=str(value))
 
 
 def run_assistant_turn(
@@ -50,311 +42,83 @@ def run_assistant_turn(
     max_tool_rounds: int,
     logger=None,
 ) -> str:
-    """Run one Claude turn and enforce calendar side-effect postconditions."""
+    """Run one model turn while keeping all calendar writes behind approval."""
     active_log = logger or log
-    messages = list(messages)
-    calendar_replies = {}
-    retried_unverified_claim = False
-    retried_calendar_residual = False
-    text_only_retry = False
-    tool_calls = 0
-    tool_result_chars = 0
-    tool_result_budget_exhausted = False
-    calendar_list_incomplete = False
-    calendar_list_failed = False
-    requested_side_effect = _requests_side_effect(messages)
-    initial_user_text = _latest_user_text(messages)
-    calendar_read_requested = bool(_CALENDAR_READ_INTENT.search(initial_user_text))
-    task_status_requested = bool(_TASK_STATUS_INTENT.search(initial_user_text))
-    calendar_list_succeeded = False
-    task_status_attempted = False
-    task_status_succeeded = False
-    task_status_reply = ""
-    side_effect_executor_seen = False
+    transcript = list(messages)
     started_at = time.monotonic()
-
-    def with_calendar_completeness_notice(text: str) -> str:
-        if calendar_list_failed:
-            return (
-                "I couldn't check the calendar, so I can't verify the schedule "
-                "or any availability claim from this response."
-            )
-        if not calendar_list_incomplete:
-            return text
-        notice = (
-            "Calendar result limit reached; more events may exist. Ask me to "
-            "continue from the next page before treating this as complete."
-        )
-        return f"{text}\n{notice}" if text else notice
-
-    def boundary_reply_with_residual(
-        boundary_reply: str, round_text: str, *, action_domain: str
-    ) -> str:
-        if not round_text:
-            return boundary_reply
-
-        # The current assistant response contains unmatched tool_use blocks.
-        # Recovery must use a text-only copy or Anthropic rejects the transcript.
-        recovery_messages = list(messages[:-1])
-        recovery_messages.append({"role": "assistant", "content": round_text})
-        recovery_messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "The proposed action has not run and the application will show "
-                    "its approval prompt. Return only the non-action answer from your "
-                    "preceding response, or exactly PASS if there is none. Do not "
-                    "claim any calendar or payment action succeeded."
-                ),
-            }
-        )
-        try:
-            recovery = claude_client.messages.create(
-                model=model,
-                max_tokens=1024,
-                system=system_prompt,
-                tools=[],
-                messages=recovery_messages,
-            )
-        except Exception:
-            active_log.warning("Could not recover mixed non-action reply")
-            return boundary_reply
-        residual = "".join(
-            block.text for block in recovery.content if block.type == "text"
-        ).strip()
-        if (
-            not residual
-            or residual.casefold() == "pass"
-            or claims_unverified_side_effect_success(residual)
-            or (
-                action_domain == "calendar"
-                and _CALENDAR_SUBJECT.search(residual)
-                and not _clearly_reports_no_action_or_asks(residual)
-            )
-            or (
-                action_domain == "service"
-                and _EXTERNAL_ACTION_SUBJECT.search(residual)
-                and not _clearly_reports_no_action_or_asks(residual)
-            )
-        ):
-            return boundary_reply
-        return f"{residual}\n{boundary_reply}"
+    tool_calls = 0
+    result_chars = 0
 
     for _ in range(max_tool_rounds):
         if time.monotonic() - started_at > MAX_ASSISTANT_TURN_SECONDS:
-            return with_calendar_completeness_notice(
-                "I stopped because this request exceeded the safe time limit."
-            )
+            return "That request took too long. Please try it as a smaller request."
+
         response = claude_client.messages.create(
             model=model,
             max_tokens=2048,
             system=system_prompt,
-            tools=[] if text_only_retry else tools,
-            messages=messages,
+            tools=tools,
+            messages=transcript,
         )
-
-        if response.stop_reason != "tool_use":
+        tool_blocks = [block for block in response.content if block.type == "tool_use"]
+        if response.stop_reason != "tool_use" or not tool_blocks:
             text = "".join(
                 block.text for block in response.content if block.type == "text"
             ).strip()
-
-            if calendar_replies:
-                action_text = "\n".join(calendar_replies.values())
-                if not text or text.casefold() == "pass":
-                    return action_text
-                if claims_unverified_side_effect_success(text):
-                    if retried_calendar_residual:
-                        return action_text
-                    retried_calendar_residual = True
-                    text_only_retry = True
-                    messages.append({"role": "assistant", "content": response.content})
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "The application will render verified calendar confirmations. "
-                                "Return only the remaining non-calendar answer from the original "
-                                "request, or exactly PASS if there is none. Do not claim that a "
-                                "calendar action succeeded."
-                            ),
-                        }
-                    )
-                    continue
-                if _generic_calendar_acknowledgement(text):
-                    return action_text
-                return f"{action_text}\n{text}"
-
-            if calendar_read_requested and calendar_list_failed:
-                return with_calendar_completeness_notice("")
-            if task_status_attempted and not task_status_succeeded:
+            if claims_calendar_success(text):
                 return (
-                    "I couldn't verify the task status, so I won't claim whether "
-                    "it is running or complete. Please try again with the exact "
-                    "run ID."
+                    "I didn't change the calendar because no verified calendar "
+                    "write ran. Please try again."
                 )
-            if task_status_succeeded and task_status_reply:
-                return task_status_reply
+            return text
 
-            structurally_unverified = (
-                (requested_side_effect and not side_effect_executor_seen)
-                or (calendar_read_requested and not calendar_list_succeeded)
-                or (task_status_requested and not task_status_succeeded)
-            ) and not _clearly_reports_no_action_or_asks(text)
-            claimed_success = claims_unverified_side_effect_success(text)
-            unverified_claim = claimed_success
-            if unverified_claim or structurally_unverified:
-                if retried_unverified_claim:
-                    return (
-                        "I couldn't verify that action, so I didn't claim it "
-                        "succeeded. Please try again."
-                    )
-                retried_unverified_claim = True
-                messages.append({"role": "assistant", "content": response.content})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "No side-effect executor succeeded in this turn. Do not "
-                            "claim a calendar or payment action is complete. Use the "
-                            "appropriate tool now, or clearly say no action was taken."
-                        ),
-                    }
-                )
-                continue
-
-            return with_calendar_completeness_notice(text)
-
-        messages.append({"role": "assistant", "content": response.content})
-        results = []
-        round_text = "".join(
-            block.text for block in response.content if block.type == "text"
-        ).strip()
-        calendar_blocks = [
-            block
-            for block in response.content
-            if block.type == "tool_use" and block.name in CALENDAR_MUTATION_TOOLS
-        ]
-        tool_blocks = [block for block in response.content if block.type == "tool_use"]
         if tool_calls + len(tool_blocks) > MAX_TOOL_CALLS_PER_TURN:
-            return with_calendar_completeness_notice(
-                "I stopped before running those tools because the request exceeded "
-                "the safe per-turn tool-call limit. Please split it up."
+            return (
+                "That request needs too many calendar operations. Please split it up."
             )
         tool_calls += len(tool_blocks)
-        if run_tool_batch is not None and len(calendar_blocks) > 1:
-            for block in calendar_blocks:
-                active_log.info("tool %s started", block.name)
-            execution = run_tool_batch(
-                [(block.name, dict(block.input)) for block in calendar_blocks]
+        transcript.append({"role": "assistant", "content": response.content})
+
+        mutations = [
+            block for block in tool_blocks if block.name in CALENDAR_MUTATION_TOOLS
+        ]
+        if len(mutations) > 1 and run_tool_batch is not None:
+            execution = _as_execution(
+                run_tool_batch([(block.name, dict(block.input)) for block in mutations])
             )
-            if not isinstance(execution, ToolExecutionResult):
-                execution = ToolExecutionResult(output=str(execution))
-            for block in calendar_blocks:
-                active_log.info(
-                    "tool %s completed %s",
-                    block.name,
-                    _tool_outcome(execution.output),
-                )
-            boundary_reply = execution.user_reply or (
-                "Those actions need explicit confirmation before they can run."
+            return execution.user_reply or (
+                "Those calendar changes need approval before they can run."
             )
-            return boundary_reply_with_residual(
-                boundary_reply, round_text, action_domain="calendar"
-            )
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
-            tool_args = dict(block.input)
+
+        tool_results = []
+        for block in tool_blocks:
             active_log.info("tool %s started", block.name)
-            if tool_result_budget_exhausted:
-                execution = ToolExecutionResult(
-                    output=json.dumps(
-                        {
-                            "error": "Tool-result context budget exhausted",
-                            "error_code": "tool_result_budget_exceeded",
-                        }
-                    )
-                )
-            else:
-                execution = run_tool(block.name, dict(tool_args))
-            if isinstance(execution, ToolExecutionResult):
-                output = str(execution.output)
-            else:
-                output = str(execution)
-                execution = ToolExecutionResult(output=output)
-            remaining_result_chars = MAX_TOOL_RESULT_CHARS_PER_TURN - tool_result_chars
-            if len(output) > remaining_result_chars:
+            execution = _as_execution(run_tool(block.name, dict(block.input)))
+            output = str(execution.output)
+            remaining = MAX_TOOL_RESULT_CHARS_PER_TURN - result_chars
+            if len(output) > remaining:
                 output = json.dumps(
                     {
-                        "error": (
-                            "Tool result exceeded the safe per-turn context budget; "
-                            "its contents were omitted"
-                        ),
+                        "error": "Calendar result exceeded the safe context limit",
                         "error_code": "tool_result_budget_exceeded",
                     }
                 )
-                tool_result_budget_exhausted = True
             else:
-                tool_result_chars += len(output)
+                result_chars += len(output)
             active_log.info("tool %s completed %s", block.name, _tool_outcome(output))
+
             if execution.halt:
-                boundary_reply = execution.user_reply or (
-                    "That action needs explicit confirmation before it can run."
+                return execution.user_reply or (
+                    "That calendar change needs approval before it can run."
                 )
-                return boundary_reply_with_residual(
-                    boundary_reply,
-                    round_text,
-                    action_domain=(
-                        "calendar"
-                        if block.name in CALENDAR_MUTATION_TOOLS
-                        else "service"
-                    ),
-                )
-            if _verified_side_effect_success(block.name, output):
-                side_effect_executor_seen = True
-            action_reply = calendar_action_reply(block.name, tool_args, output)
-            if action_reply:
-                key = _calendar_action_key(block.name, tool_args)
-                calendar_replies[key] = action_reply
-            if block.name == "list_events":
-                try:
-                    list_payload = json.loads(output)
-                    if (
-                        not isinstance(list_payload, dict)
-                        or list_payload.get("error")
-                        or list_payload.get("error_code")
-                    ):
-                        calendar_list_failed = True
-                    else:
-                        calendar_list_succeeded = True
-                        if list_payload.get("truncated"):
-                            calendar_list_incomplete = True
-                except (TypeError, json.JSONDecodeError):
-                    calendar_list_failed = True
-            is_executor_status_poll = block.name == "tempo_task_status" or (
-                block.name == "tempo_call_service"
-                and str(tool_args.get("method", "POST")).upper() == "GET"
-                and not tool_args.get("body")
-                and tool_args.get("max_spend", "") in {"", "0"}
-            )
-            if is_executor_status_poll:
-                task_status_attempted = True
-                status_payload = _successful_object_result(output)
-                status = status_payload.get("status") if status_payload else None
-                if isinstance(status, str) and re.fullmatch(
-                    r"[A-Za-z0-9_. -]{1,80}", status
-                ):
-                    task_status_succeeded = True
-                    task_status_reply = f"Task status: {status}."
-            results.append(
+            tool_results.append(
                 {
                     "type": "tool_result",
                     "tool_use_id": block.id,
                     "content": output,
                 }
             )
-        messages.append({"role": "user", "content": results})
 
-    return with_calendar_completeness_notice(
-        "Sorry — that took too many steps. Try rephrasing?"
-    )
+        transcript.append({"role": "user", "content": tool_results})
+
+    return "That took too many steps. Please rephrase it as a smaller request."

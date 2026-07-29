@@ -10,129 +10,84 @@ class PendingActionStoreTests(unittest.TestCase):
         self.store = PendingActionStore()
         self.actor = (-100123, 101)
 
-    def test_exact_calendar_approval_is_one_shot(self):
-        pending = self.store.propose(
+    def propose(self):
+        return self.store.propose(
             actor=self.actor,
-            tool_name="delete_event",
-            tool_args={"event_id": "victim-event"},
+            tool_name="_calendar_batch",
+            tool_args={"actions": [{"name": "delete_event"}]},
+            preview="Delete Dinner",
             now=self.now,
         )
 
-        approved = self.store.resolve(
-            self.actor, pending.confirmation_prompt, now=self.now
-        )
-        replay = self.store.resolve(
-            self.actor, pending.confirmation_prompt, now=self.now
-        )
+    def test_exact_approval_is_one_shot(self):
+        pending = self.propose()
 
-        self.assertEqual(approved.tool_name, "delete_event")
-        self.assertEqual(approved.tool_args, {"event_id": "victim-event"})
+        approved = self.store.resolve(self.actor, "APPROVE", now=self.now)
+        replay = self.store.resolve(self.actor, "approve", now=self.now)
+
+        self.assertEqual(approved, pending)
         self.assertIsNone(replay)
 
-    def test_payment_approval_requires_only_the_word_approve(self):
-        pending = self.store.propose(
-            actor=self.actor,
-            tool_name="tempo_call_service",
-            tool_args={"url": "https://service.example/paid"},
-            amount="0.003",
-            now=self.now,
-        )
+    def test_approval_rejects_extra_words(self):
+        pending = self.propose()
 
-        self.assertEqual(pending.confirmation_prompt, "approve")
-        for reply in (
-            "yes",
-            "approve $0.003",
-            "approve P7K4M2 $0.01",
-            "approve WRONG1 $0.003",
-            "approve please",
-        ):
-            with self.subTest(reply=reply):
-                self.assertFalse(pending.matches(reply, now=self.now))
-        self.assertTrue(pending.matches("APPROVE", now=self.now))
+        for text in ("yes", "approve please", "approve Dinner", "do it"):
+            with self.subTest(text=text):
+                self.assertFalse(pending.matches(text, now=self.now))
 
-    def test_zero_spend_ceiling_is_preserved_without_changing_reply_phrase(self):
-        pending = self.store.propose(
-            actor=self.actor,
-            tool_name="tempo_call_service",
-            tool_args={"url": "https://service.example/free"},
-            spend_limit="0",
-            now=self.now,
-        )
-
-        self.assertEqual(pending.spend_limit, "0.00")
-        self.assertEqual(pending.confirmation_prompt, "approve")
-
-    def test_approval_spend_precision_matches_the_pinned_cli(self):
-        with self.assertRaisesRegex(ValueError, "precision"):
-            self.store.propose(
-                actor=self.actor,
-                tool_name="tempo_call_service",
-                tool_args={},
-                spend_limit="0.0000009",
-                now=self.now,
-            )
-
-    def test_unrelated_message_from_owner_cancels_pending_action(self):
-        pending = self.store.propose(
-            actor=self.actor,
-            tool_name="update_event",
-            tool_args={"event_id": "dinner", "start": "2026-07-19T20:00:00-04:00"},
-            now=self.now,
-        )
+    def test_unrelated_message_cancels_pending_action(self):
+        self.propose()
 
         self.assertIsNone(
-            self.store.resolve(self.actor, "what is the weather?", now=self.now)
+            self.store.resolve(self.actor, "what is tomorrow?", now=self.now)
         )
-        self.assertIsNone(
-            self.store.resolve(self.actor, pending.confirmation_prompt, now=self.now)
-        )
+        self.assertIsNone(self.store.resolve(self.actor, "approve", now=self.now))
 
-    def test_group_member_cannot_approve_or_cancel_another_users_action(self):
-        pending = self.store.propose(
-            actor=self.actor,
-            tool_name="delete_event",
-            tool_args={"event_id": "dinner"},
-            now=self.now,
-        )
+    def test_another_user_cannot_approve_or_cancel(self):
+        pending = self.propose()
         other_actor = (self.actor[0], 202)
 
-        self.assertIsNone(
-            self.store.resolve(other_actor, pending.confirmation_prompt, now=self.now)
-        )
+        self.assertIsNone(self.store.resolve(other_actor, "approve", now=self.now))
         self.assertIs(self.store.get(self.actor, now=self.now), pending)
 
-    def test_two_users_in_one_chat_have_independent_pending_actions(self):
-        first = self.store.propose(
-            actor=self.actor,
-            tool_name="delete_event",
-            tool_args={"event_id": "first"},
-            now=self.now,
-        )
-        second_actor = (self.actor[0], 202)
+    def test_users_have_independent_pending_actions(self):
+        first = self.propose()
+        other_actor = (self.actor[0], 202)
         second = self.store.propose(
-            actor=second_actor,
-            tool_name="delete_event",
-            tool_args={"event_id": "second"},
+            actor=other_actor,
+            tool_name="_calendar_batch",
+            tool_args={"actions": [{"name": "create_event"}]},
             now=self.now,
         )
 
         self.assertEqual(self.store.get(self.actor, now=self.now), first)
-        self.assertEqual(self.store.get(second_actor, now=self.now), second)
+        self.assertEqual(self.store.get(other_actor, now=self.now), second)
 
     def test_pending_action_expires(self):
-        pending = self.store.propose(
-            actor=self.actor,
-            tool_name="delete_event",
-            tool_args={"event_id": "dinner"},
-            now=self.now,
-        )
+        self.propose()
 
         self.assertIsNone(
             self.store.resolve(
                 self.actor,
-                pending.confirmation_prompt,
+                "approve",
                 now=self.now + timedelta(minutes=11),
             )
+        )
+
+    def test_tool_arguments_are_copied(self):
+        arguments = {"actions": [{"name": "create_event"}]}
+        pending = self.store.propose(
+            actor=self.actor,
+            tool_name="_calendar_batch",
+            tool_args=arguments,
+            now=self.now,
+        )
+
+        arguments["actions"][0]["name"] = "delete_event"
+
+        self.assertEqual(
+            pending.tool_args["actions"][0]["name"],
+            "create_event",
         )
 
 

@@ -27,6 +27,8 @@ def _tool_outcome(output: str) -> str:
         return "has_error_code"
     if payload.get("error"):
         return "error"
+    if payload.get("success") is False:
+        return "unsuccessful"
     if payload.get("status"):
         return "has_status"
     return "ok"

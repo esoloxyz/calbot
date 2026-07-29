@@ -117,7 +117,7 @@ jobs:
   container:
     name: Container build and smoke test
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -133,18 +133,7 @@ jobs:
           docker run --rm --network none --entrypoint sh calbot:ci -ceu '
             test "$(id -u)" = "10001"
             test "$HOME" = "/home/calbot"
-            test "$TEMPO_BIN" = "/opt/tempo/bin/tempo"
-            test "$TEMPO_HOME" = "/opt/tempo"
-            test -x "$TEMPO_BIN"
-            test ! -w "$TEMPO_BIN"
-            test ! -w "$(dirname "$TEMPO_BIN")"
-            test -x /opt/tempo/bin/tempo-wallet
-            test -x /opt/tempo/bin/tempo-request
-            test ! -w /opt/tempo/bin/tempo-wallet
-            test ! -w /opt/tempo/bin/tempo-request
-            test -w "$HOME/.tempo/wallet"
-            python -c "import calbot.runtime, calbot.telegram_app, calbot.tempo.process_guard, sqlite3, telegram; print(sqlite3.sqlite_version, telegram.__version__)"
-            "$TEMPO_BIN" --version
-            "$TEMPO_BIN" wallet --version
-            "$TEMPO_BIN" request --version
+            test ! -w /app
+            test ! -w /app/calbot
+            python -c "import calbot.runtime, calbot.telegram_app, telegram; print(telegram.__version__)"
           '

@@ -4,5 +4,3 @@ google-api-python-client==2.198.0
 google-auth==2.55.2
 google-auth-httplib2==0.4.0
 httplib2==0.32.0
-cryptography==49.0.0
-pycryptodome==3.23.0

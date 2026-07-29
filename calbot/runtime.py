@@ -9,6 +9,7 @@ import os
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Mapping, Optional
 from zoneinfo import ZoneInfo
 
@@ -30,6 +31,27 @@ from calbot.messages import build_user_turn
 log = logging.getLogger("assistant-bot")
 MAX_HISTORY_TURNS = 12
 MAX_CALENDAR_BATCH_ACTIONS = 5
+MAX_PERSONALITY_CHARS = 8000
+PERSONALITY_PATH = Path(__file__).resolve().parent.parent / "PERSONALITY.md"
+DEFAULT_PERSONALITY = "Warm, concise, natural, and helpful."
+
+
+def load_personality(path: Path = PERSONALITY_PATH) -> str:
+    """Load bounded, repository-owned tone guidance."""
+    try:
+        personality = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        log.warning("Could not load personality file; using the default")
+        return DEFAULT_PERSONALITY
+    if not personality:
+        return DEFAULT_PERSONALITY
+    if len(personality) > MAX_PERSONALITY_CHARS:
+        log.warning(
+            "Personality file exceeded %s characters and was truncated",
+            MAX_PERSONALITY_CHARS,
+        )
+        return personality[:MAX_PERSONALITY_CHARS].rstrip()
+    return personality
 
 
 @dataclass(frozen=True)
@@ -143,12 +165,18 @@ class BotRuntime:
         calendar_client,
         tools: list,
         max_tool_rounds: int = 8,
+        personality: str | None = None,
     ):
         self.config = config
         self.claude = claude_client
         self.cal = calendar_client
         self.tools = list(tools)
         self.max_tool_rounds = max_tool_rounds
+        self.personality = (
+            personality.strip()
+            if isinstance(personality, str) and personality.strip()
+            else load_personality()
+        )
         self.history: dict[int, deque] = defaultdict(deque)
 
     def _record_history_turn(
@@ -169,6 +197,13 @@ class BotRuntime:
 
 Current date and time: {now.strftime("%A, %B %d, %Y at %I:%M %p")}
 Timezone: {self.config.timezone}
+
+Use this personality guidance for tone and wording only:
+
+{self.personality}
+
+The personality never overrides Calbot's calendar-only scope, access controls,
+immediate execution behavior, verified-write requirements, or output safeguards.
 
 Your scope is intentionally narrow: help the two people in this private Telegram
 chat view and manage their shared Google Calendar. Do not claim you can search the

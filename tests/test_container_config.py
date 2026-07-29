@@ -34,6 +34,8 @@ class ContainerDependencyTests(unittest.TestCase):
         dockerignore = (ROOT / ".dockerignore").read_text()
 
         self.assertNotRegex(dockerfile, r"(?m)^COPY\s+\.\s+\.$")
+        self.assertIn("COPY --chmod=0444 PERSONALITY.md ./", dockerfile)
+        self.assertIn("!PERSONALITY.md", dockerignore)
         self.assertIn(".git", dockerignore)
         self.assertIn(".env", dockerignore)
         self.assertIn("tests", dockerignore)

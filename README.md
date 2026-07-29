@@ -24,6 +24,13 @@ Examples:
 Calbot does not include payments, wallets, paid APIs, web search, food ordering,
 or any non-calendar integrations.
 
+## Personality
+
+Edit [`PERSONALITY.md`](PERSONALITY.md) to define Calbot's voice. Its contents
+are loaded when the bot starts, so restart or redeploy Calbot after changing it.
+Personality guidance controls tone only and cannot override calendar scope,
+access controls, immediate writes, or conversational-output safeguards.
+
 ## How it works
 
 ```text

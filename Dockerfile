@@ -41,6 +41,7 @@ COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
 COPY --chmod=0444 bot.py ./
+COPY --chmod=0444 PERSONALITY.md ./
 COPY --chown=root:root calbot/ ./calbot/
 COPY --chmod=0555 start.sh ./
 

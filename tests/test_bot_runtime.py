@@ -284,6 +284,21 @@ class BotRuntimeTests(unittest.TestCase):
         self.assertNotIn("Tempo", prompt)
         self.assertNotIn("DoorDash", prompt)
 
+    def test_personality_is_loaded_into_the_prompt_as_tone_only(self):
+        runtime = BotRuntime(
+            config=config(),
+            claude_client=SimpleNamespace(messages=FakeMessages([])),
+            calendar_client=FakeCalendar(),
+            tools=[],
+            personality="Dry, affectionate, and lightly playful.",
+        )
+
+        prompt = runtime.system_prompt()
+
+        self.assertIn("Dry, affectionate, and lightly playful.", prompt)
+        self.assertIn("for tone and wording only", prompt)
+        self.assertIn("never overrides", prompt)
+
 
 class BlockingBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_serializes_blocking_calls(self):

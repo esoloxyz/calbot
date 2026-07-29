@@ -12,5 +12,6 @@ __pycache__
 htmlcov
 tests
 *.md
+!PERSONALITY.md
 LICENSE
 Procfile

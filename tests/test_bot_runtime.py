@@ -35,6 +35,13 @@ def multi_tool_response(*calls):
     )
 
 
+def text_response(text):
+    return SimpleNamespace(
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text=text)],
+    )
+
+
 class FakeMessages:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -97,6 +104,99 @@ def runtime_with(responses):
 
 
 class BotRuntimeTests(unittest.TestCase):
+    def test_acknowledgment_gets_no_tools_or_stale_calendar_history(self):
+        runtime = BotRuntime(
+            config=config(),
+            claude_client=SimpleNamespace(
+                messages=FakeMessages([text_response("thanks boss. we're so back.")])
+            ),
+            calendar_client=FakeCalendar(),
+            tools=[
+                {"name": "list_events"},
+                {"name": "create_event"},
+                {"name": "update_event"},
+                {"name": "delete_event"},
+            ],
+        )
+        runtime.history[-100123].extend(
+            (
+                {"role": "user", "content": "add kaufman bbq august 22 at noon"},
+                {
+                    "role": "assistant",
+                    "content": (
+                        "done. kaufman bbq is on the calendar for saturday, "
+                        "august 22 from 12pm to 11pm."
+                    ),
+                },
+            )
+        )
+
+        reply = runtime.ask(
+            chat_id=-100123,
+            user_id=101,
+            user_text="good stuff calbot. youre fixed",
+        )
+
+        call = runtime.claude.messages.calls[0]
+        self.assertEqual(reply, "thanks boss. we're so back.")
+        self.assertEqual(call["tools"], [])
+        self.assertEqual(
+            call["messages"],
+            [{"role": "user", "content": "good stuff calbot. youre fixed"}],
+        )
+        self.assertEqual(runtime.cal.calls, [])
+
+    def test_unoffered_mutation_is_denied_even_if_model_requests_it(self):
+        runtime = BotRuntime(
+            config=config(),
+            claude_client=SimpleNamespace(
+                messages=FakeMessages(
+                    [
+                        tool_response(
+                            "create_event",
+                            {
+                                "title": "Kaufman BBQ",
+                                "start": "2026-08-22T12:00:00-04:00",
+                                "end": "2026-08-22T23:00:00-04:00",
+                            },
+                        )
+                    ]
+                )
+            ),
+            calendar_client=FakeCalendar(),
+            tools=[{"name": "create_event"}],
+        )
+
+        with self.assertLogs("assistant-bot", level="WARNING") as logs:
+            reply = runtime.ask(
+                chat_id=-100123,
+                user_id=101,
+                user_text="good stuff calbot. youre fixed",
+            )
+
+        self.assertEqual(reply, "got it.")
+        self.assertEqual(runtime.cal.calls, [])
+        self.assertIn("tool denied", "\n".join(logs.output).casefold())
+
+    def test_stale_calendar_state_claim_is_suppressed_on_acknowledgment(self):
+        runtime = runtime_with(
+            [text_response("that's already on the calendar: kaufman bbq for saturday.")]
+        )
+
+        with self.assertLogs("assistant-bot", level="WARNING") as logs:
+            reply = runtime.ask(
+                chat_id=-100123,
+                user_id=101,
+                user_text="good stuff calbot. youre fixed",
+            )
+
+        self.assertEqual(reply, "got it.")
+        self.assertEqual(runtime.cal.calls, [])
+        self.assertIn(
+            "suppressed calendar-state claim",
+            "\n".join(logs.output).casefold(),
+        )
+
     def test_create_executes_immediately_and_only_once(self):
         runtime = runtime_with(
             [

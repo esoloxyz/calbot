@@ -25,5 +25,8 @@ deployment secrets, and give the Google service account access only to the
 calendar Calbot manages.
 
 Calendar event text is treated as untrusted data rather than instructions.
-Calendar writes are validated and version-checked by the application, and a
-write is never reported as successful without a verified API result.
+Each current message independently authorizes no calendar tools, reads only, or
+writes; acknowledgments and small talk receive no tools or stale conversation
+history. Calendar writes are then validated and version-checked by the
+application, and a write is never reported as successful without a verified API
+result.

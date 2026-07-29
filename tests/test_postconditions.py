@@ -1,10 +1,21 @@
 import json
 import unittest
 
-from calbot.assistant.postconditions import calendar_action_reply
+from calbot.assistant.postconditions import (
+    calendar_action_reply,
+    claims_calendar_state,
+)
 
 
 class CalendarActionReplyTests(unittest.TestCase):
+    def test_detects_calendar_state_claims(self):
+        self.assertTrue(
+            claims_calendar_state(
+                "that's already on the calendar: kaufman bbq for saturday."
+            )
+        )
+        self.assertFalse(claims_calendar_state("thanks boss. we're so back."))
+
     def test_created_event_confirmation_is_lowercase_and_exact(self):
         reply = calendar_action_reply(
             "create_event",

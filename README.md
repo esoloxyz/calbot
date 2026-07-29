@@ -39,17 +39,26 @@ invent a successful calendar change.
 Telegram adapter
       |
       v
-Conversation runtime ----> Claude tool loop ----> calendar reads
-      |
-      v
-Mutation executor ----> validation + version check ----> Google Calendar
-      |
-      v
-Verified conversational confirmation
+Conversation runtime ----> per-message access gate
+                                  |
+                 +----------------+----------------+
+                 | none           | read           | write
+                 v                v                v
+          conversational     calendar reads   mutation executor
+               reply                           |
+                                          validation + version check
+                                               |
+                                               v
+                                         Google Calendar
+                                               |
+                                               v
+                                  verified conversational confirmation
 ```
 
-Writes use deterministic request IDs and duplicate checks so retrying the same
-Telegram message does not create another copy.
+Each current message independently authorizes no tools, calendar reads, or
+calendar writes. Small talk receives no calendar tools or stale calendar
+history. Writes also use deterministic request IDs and duplicate checks so
+retrying the same Telegram message does not create another copy.
 
 The package is organized by responsibility:
 
@@ -57,6 +66,7 @@ The package is organized by responsibility:
 |---|---|
 | `calbot/telegram_app.py` | Telegram handlers, authorization, and scheduled jobs |
 | `calbot/runtime.py` | Conversation history and bounded assistant orchestration |
+| `calbot/assistant/access.py` | Per-message read/write authorization for tools |
 | `calbot/mutations.py` | Immediate validation and verified mutation execution |
 | `calbot/calendar/contracts.py` | Canonical tool schemas and field limits |
 | `calbot/calendar/client.py` | Google Calendar API reads and writes |

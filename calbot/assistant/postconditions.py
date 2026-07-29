@@ -14,11 +14,23 @@ _UNVERIFIED_COMPLETION = re.compile(
     r"|^\s*(?:done|all set)\b)",
     re.IGNORECASE,
 )
+_CALENDAR_STATE_CLAIM = re.compile(
+    r"(?:"
+    r"\b(?:already\s+)?(?:on|in)\s+(?:the|your|our)\s+calendar\b|"
+    r"\b(?:scheduled|booked)\s+(?:for|on|at)\b"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def claims_calendar_success(text: str) -> bool:
     """Return whether model prose claims that it completed a calendar write."""
     return bool(_UNVERIFIED_COMPLETION.search(text or ""))
+
+
+def claims_calendar_state(text: str) -> bool:
+    """Return whether prose asserts that a concrete event is scheduled."""
+    return bool(_CALENDAR_STATE_CLAIM.search(text or ""))
 
 
 def _friendly_date(value: date) -> str:

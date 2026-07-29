@@ -7,8 +7,11 @@ import logging
 from collections import defaultdict, deque
 from datetime import datetime
 
+from calbot.assistant.access import CalendarToolAccess, calendar_tool_access
+from calbot.assistant.execution import ToolExecutionResult
 from calbot.assistant.loop import run_assistant_turn
 from calbot.assistant.policy import CALENDAR_ASSISTANT_POLICY
+from calbot.assistant.postconditions import claims_calendar_state
 from calbot.calendar.contracts import CALENDAR_MUTATION_TOOLS
 from calbot.config import BotConfig
 from calbot.messages import build_user_turn
@@ -78,6 +81,23 @@ web, make payments, order food, manage wallets, or call any non-calendar service
 
 {CALENDAR_ASSISTANT_POLICY}"""
 
+    def _tool_access(self, chat_id: int, user_text: str) -> CalendarToolAccess:
+        history = self.history[chat_id]
+        previous_user_text = ""
+        previous_assistant_text = ""
+        if len(history) >= 2:
+            previous_user = history[-2]
+            previous_assistant = history[-1]
+            if previous_user.get("role") == "user":
+                previous_user_text = str(previous_user.get("content", ""))
+            if previous_assistant.get("role") == "assistant":
+                previous_assistant_text = str(previous_assistant.get("content", ""))
+        return calendar_tool_access(
+            user_text,
+            previous_user_text=previous_user_text,
+            previous_assistant_text=previous_assistant_text,
+        )
+
     def ask(
         self,
         *,
@@ -88,10 +108,47 @@ web, make payments, order food, manage wallets, or call any non-calendar service
         request_id: str = "",
     ) -> str:
         user_turn = build_user_turn(user_text, sender_display_name)
-        messages = list(self.history[chat_id]) + [user_turn]
+        access = self._tool_access(chat_id, user_text)
+        log.info("assistant turn authorized calendar access=%s", access.value)
+        history = list(self.history[chat_id])
+        messages = (
+            history + [user_turn]
+            if access is not CalendarToolAccess.NONE
+            else [user_turn]
+        )
+        if access is CalendarToolAccess.WRITE:
+            active_tools = self.tools
+        elif access is CalendarToolAccess.READ:
+            active_tools = [
+                tool for tool in self.tools if tool.get("name") == "list_events"
+            ]
+        else:
+            active_tools = []
         stable_request_id = request_id or f"telegram:{chat_id}:{user_id}"
 
+        def denied_tool(name: str) -> ToolExecutionResult:
+            log.warning(
+                "Calendar tool denied by current-message authorization "
+                "(tool=%s access=%s)",
+                name,
+                access.value,
+            )
+            return ToolExecutionResult(
+                output=json.dumps(
+                    {
+                        "error": "Current message did not authorize this tool",
+                        "error_code": "tool_not_authorized",
+                    }
+                ),
+                user_reply="got it.",
+                halt=True,
+            )
+
         def run_tool(name: str, args: dict):
+            if access is CalendarToolAccess.NONE or (
+                access is CalendarToolAccess.READ and name in CALENDAR_MUTATION_TOOLS
+            ):
+                return denied_tool(name)
             if name in CALENDAR_MUTATION_TOOLS:
                 return self.mutations.execute(
                     actions=[(name, args)],
@@ -107,6 +164,8 @@ web, make payments, order food, manage wallets, or call any non-calendar service
             return self.cal.run_tool(name, args)
 
         def run_tool_batch(actions: list[tuple[str, dict]]):
+            if access is not CalendarToolAccess.WRITE:
+                return denied_tool("mutation_batch")
             return self.mutations.execute(
                 actions=actions,
                 request_id=stable_request_id,
@@ -116,13 +175,16 @@ web, make payments, order food, manage wallets, or call any non-calendar service
             claude_client=self.claude,
             model=self.config.model,
             system_prompt=self.system_prompt(),
-            tools=self.tools,
+            tools=active_tools,
             messages=messages,
             run_tool=run_tool,
             run_tool_batch=run_tool_batch,
             max_tool_rounds=self.max_tool_rounds,
             logger=log,
         )
+        if access is CalendarToolAccess.NONE and claims_calendar_state(text):
+            log.warning("Suppressed calendar-state claim on a non-calendar turn")
+            text = "got it."
         self._record_history_turn(
             chat_id,
             user_turn,

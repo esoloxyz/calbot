@@ -13,7 +13,7 @@ Examples:
 ## What it does
 
 - Creates, lists, updates, and deletes Google Calendar events.
-- Understands conversational dates and follow-up edits through Claude.
+- Understands conversational dates and follow-up edits through OpenAI.
 - Posts a Friday weekend preview and a Sunday week-ahead summary.
 - Provides `/today`, `/week`, and `/weekend` calendar summaries.
 - Restricts access to one Telegram chat and, optionally, specific users.
@@ -80,7 +80,7 @@ Requirements:
 
 - Python 3.12+
 - A Telegram bot token
-- An Anthropic API key
+- An OpenAI API key
 - A Google Cloud service account with access to the shared calendar
 
 ```bash
@@ -101,8 +101,8 @@ a convenient local reference and is not loaded automatically.
 | `TELEGRAM_BOT_TOKEN` | Yes | Token from BotFather |
 | `ALLOWED_CHAT_ID` | Yes | The only Telegram chat Calbot accepts |
 | `ALLOWED_USER_IDS` | No | Comma-separated user IDs allowed in that chat |
-| `ANTHROPIC_API_KEY` | Yes | Claude API authentication |
-| `ANTHROPIC_MODEL` | No | Defaults to `claude-sonnet-4-6` |
+| `OPENAI_API_KEY` | Yes | OpenAI API authentication |
+| `OPENAI_MODEL` | No | Defaults to `gpt-5.6-terra` |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Yes | Complete service-account JSON on one line |
 | `CALENDAR_ID` | Yes | Shared calendar ID |
 | `TIMEZONE` | No | Defaults to `America/New_York` |

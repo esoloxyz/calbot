@@ -23,7 +23,7 @@ from calbot.telegram_app import (
 def config(**overrides):
     values = {
         "telegram_token": "telegram-token",
-        "anthropic_api_key": "anthropic-key",
+        "openai_api_key": "openai-key",
         "allowed_chat_id": -100123,
         "allowed_user_ids": frozenset({101, 202}),
         "bot_owner": "Test Couple",

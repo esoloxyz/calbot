@@ -1,4 +1,4 @@
-"""Canonical calendar limits and Claude tool contracts."""
+"""Canonical calendar limits and model tool contracts."""
 
 MAX_LIST_EVENTS = 50
 MAX_LIST_TOTAL_EVENTS = 200

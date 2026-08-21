@@ -34,10 +34,10 @@ Calbot connects one private Telegram chat to one shared Google Calendar.
 The service account does not need a project-level IAM role. Calendar sharing is
 what grants access.
 
-## 4. Configure Claude
+## 4. Configure OpenAI
 
-Create an Anthropic API key and store it as `ANTHROPIC_API_KEY`. Calbot defaults
-to `claude-sonnet-4-6`; override `ANTHROPIC_MODEL` only if needed.
+Create an OpenAI API key and store it as `OPENAI_API_KEY`. Calbot defaults to
+`gpt-5.6-terra`; override `OPENAI_MODEL` only if needed.
 
 ## 5. Configure Railway
 
@@ -46,7 +46,7 @@ Create or select a Railway service and add:
 - `TELEGRAM_BOT_TOKEN`
 - `ALLOWED_CHAT_ID`
 - `ALLOWED_USER_IDS` (optional)
-- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
 - `GOOGLE_SERVICE_ACCOUNT_JSON`
 - `CALENDAR_ID`
 - `TIMEZONE`

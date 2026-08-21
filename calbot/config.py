@@ -9,13 +9,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 DEFAULT_TIMEZONE = "America/New_York"
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_MODEL = "gpt-5.6-terra"
 
 
 @dataclass(frozen=True)
 class BotConfig:
     telegram_token: str = field(repr=False)
-    anthropic_api_key: str = field(repr=False)
+    openai_api_key: str = field(repr=False)
     allowed_chat_id: int
     timezone: str = DEFAULT_TIMEZONE
     model: str = DEFAULT_MODEL
@@ -30,7 +30,7 @@ class BotConfig:
         values = os.environ if env is None else env
         required = (
             "TELEGRAM_BOT_TOKEN",
-            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
             "ALLOWED_CHAT_ID",
             "GOOGLE_SERVICE_ACCOUNT_JSON",
             "CALENDAR_ID",
@@ -67,10 +67,10 @@ class BotConfig:
 
         return cls(
             telegram_token=values["TELEGRAM_BOT_TOKEN"],
-            anthropic_api_key=values["ANTHROPIC_API_KEY"],
+            openai_api_key=values["OPENAI_API_KEY"],
             allowed_chat_id=allowed_chat_id,
             timezone=timezone,
-            model=values.get("ANTHROPIC_MODEL", DEFAULT_MODEL),
+            model=values.get("OPENAI_MODEL", DEFAULT_MODEL),
             bot_owner=values.get("BOT_OWNER", "there"),
             respond_to_all=respond_to_all == "true",
             google_service_account_json=values["GOOGLE_SERVICE_ACCOUNT_JSON"],

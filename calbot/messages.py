@@ -32,7 +32,7 @@ _NON_CONVERSATIONAL_OUTPUT = re.compile(
 
 
 def build_user_turn(message_text: str, sender_display_name: str = "") -> dict:
-    """Build a Claude user turn without exposing mutable Telegram profile data.
+    """Build a model user turn without exposing mutable Telegram profile data.
 
     Telegram display names are user-controlled metadata and may look like natural-language
     instructions. Keep them out of model-visible content so only the message body can cause

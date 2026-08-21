@@ -1,4 +1,4 @@
-"""Bounded Claude tool loop for calendar reads and verified changes."""
+"""Bounded OpenAI Responses tool loop for calendar reads and verified changes."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _as_execution(value) -> ToolExecutionResult:
 
 def run_assistant_turn(
     *,
-    claude_client,
+    openai_client,
     model: str,
     system_prompt: str,
     tools: list,
@@ -37,11 +37,24 @@ def run_assistant_turn(
     run_tool: Callable[[str, dict], str],
     run_tool_batch=None,
     max_tool_rounds: int,
+    safety_identifier: str = "",
     logger=None,
 ) -> str:
     """Run one model turn while keeping calendar writes executor-owned."""
     active_log = logger or log
-    transcript = list(messages)
+    input_items = list(messages)
+    openai_tools = [
+        {
+            "type": "function",
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "parameters": tool["input_schema"],
+            # Existing calendar schemas intentionally have optional fields. The
+            # executor remains the final validation boundary for every call.
+            "strict": False,
+        }
+        for tool in tools
+    ]
     started_at = time.monotonic()
     tool_calls = 0
     result_chars = 0
@@ -50,18 +63,26 @@ def run_assistant_turn(
         if time.monotonic() - started_at > MAX_ASSISTANT_TURN_SECONDS:
             return "that request took too long. please try it as a smaller request."
 
-        response = claude_client.messages.create(
-            model=model,
-            max_tokens=2048,
-            system=system_prompt,
-            tools=tools,
-            messages=transcript,
+        request = {
+            "model": model,
+            "max_output_tokens": 2048,
+            "instructions": system_prompt,
+            "tools": openai_tools,
+            "input": input_items,
+            "reasoning": {"effort": "low"},
+            "text": {"verbosity": "low"},
+            "store": False,
+        }
+        if safety_identifier:
+            request["safety_identifier"] = safety_identifier
+        response = openai_client.responses.create(
+            **request,
         )
-        tool_blocks = [block for block in response.content if block.type == "tool_use"]
-        if response.stop_reason != "tool_use" or not tool_blocks:
-            text = "".join(
-                block.text for block in response.content if block.type == "text"
-            ).strip()
+        function_calls = [
+            item for item in response.output if item.type == "function_call"
+        ]
+        if not function_calls:
+            text = (response.output_text or "").strip()
             if claims_calendar_success(text):
                 return (
                     "i didn't change the calendar because no verified calendar "
@@ -69,28 +90,43 @@ def run_assistant_turn(
                 )
             return text
 
-        if tool_calls + len(tool_blocks) > MAX_TOOL_CALLS_PER_TURN:
+        if tool_calls + len(function_calls) > MAX_TOOL_CALLS_PER_TURN:
             return (
                 "that request needs too many calendar operations. please split it up."
             )
-        tool_calls += len(tool_blocks)
-        transcript.append({"role": "assistant", "content": response.content})
+        tool_calls += len(function_calls)
+        input_items.extend(response.output)
+
+        parsed_calls = []
+        for call in function_calls:
+            try:
+                arguments = json.loads(call.arguments)
+                if not isinstance(arguments, dict):
+                    raise ValueError("function arguments must be an object")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                active_log.warning("tool %s returned invalid arguments", call.name)
+                arguments = {}
+            parsed_calls.append((call, arguments))
 
         mutations = [
-            block for block in tool_blocks if block.name in CALENDAR_MUTATION_TOOLS
+            (call, arguments)
+            for call, arguments in parsed_calls
+            if call.name in CALENDAR_MUTATION_TOOLS
         ]
         if len(mutations) > 1 and run_tool_batch is not None:
             execution = _as_execution(
-                run_tool_batch([(block.name, dict(block.input)) for block in mutations])
+                run_tool_batch(
+                    [(call.name, arguments) for call, arguments in mutations]
+                )
             )
             return execution.user_reply or (
                 "i couldn't verify those calendar changes. please try again."
             )
 
-        tool_results = []
-        for block in tool_blocks:
-            active_log.info("tool %s started", block.name)
-            execution = _as_execution(run_tool(block.name, dict(block.input)))
+        function_outputs = []
+        for call, arguments in parsed_calls:
+            active_log.info("tool %s started", call.name)
+            execution = _as_execution(run_tool(call.name, arguments))
             output = str(execution.output)
             remaining = MAX_TOOL_RESULT_CHARS_PER_TURN - result_chars
             if len(output) > remaining:
@@ -102,20 +138,20 @@ def run_assistant_turn(
                 )
             else:
                 result_chars += len(output)
-            active_log.info("tool %s completed %s", block.name, _tool_outcome(output))
+            active_log.info("tool %s completed %s", call.name, _tool_outcome(output))
 
             if execution.halt:
                 return execution.user_reply or (
                     "i couldn't verify that calendar change. please try again."
                 )
-            tool_results.append(
+            function_outputs.append(
                 {
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": output,
+                    "type": "function_call_output",
+                    "call_id": call.call_id,
+                    "output": output,
                 }
             )
 
-        transcript.append({"role": "user", "content": tool_results})
+        input_items.extend(function_outputs)
 
     return "that took too many steps. please rephrase it as a smaller request."

@@ -8,27 +8,27 @@ from calbot.assistant.loop import run_assistant_turn
 
 def text_response(text):
     return SimpleNamespace(
-        stop_reason="end_turn",
-        content=[SimpleNamespace(type="text", text=text)],
+        output_text=text,
+        output=[SimpleNamespace(type="message")],
     )
 
 
 def tool_response(*calls):
     return SimpleNamespace(
-        stop_reason="tool_use",
-        content=[
+        output_text="",
+        output=[
             SimpleNamespace(
-                type="tool_use",
+                type="function_call",
                 name=name,
-                input=arguments,
-                id=f"tool-{index}",
+                arguments=json.dumps(arguments),
+                call_id=f"call-{index}",
             )
             for index, (name, arguments) in enumerate(calls, start=1)
         ],
     )
 
 
-class FakeMessages:
+class FakeResponses:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
@@ -40,9 +40,9 @@ class FakeMessages:
 
 class AssistantToolLoopTests(unittest.TestCase):
     def run_loop(self, responses, run_tool, run_tool_batch=None):
-        client = SimpleNamespace(messages=FakeMessages(responses))
+        client = SimpleNamespace(responses=FakeResponses(responses))
         reply = run_assistant_turn(
-            claude_client=client,
+            openai_client=client,
             model="test",
             system_prompt="calendar only",
             tools=[],
@@ -71,7 +71,7 @@ class AssistantToolLoopTests(unittest.TestCase):
         )
 
         self.assertEqual(reply, "You have dinner at 7.")
-        self.assertIn("Dinner", repr(client.messages.calls[1]["messages"]))
+        self.assertIn("Dinner", repr(client.responses.calls[1]["input"]))
 
     def test_mutation_returns_deterministic_execution_reply(self):
         reply, client = self.run_loop(
@@ -95,7 +95,7 @@ class AssistantToolLoopTests(unittest.TestCase):
         )
 
         self.assertEqual(reply, "Done — Dinner is on the calendar.")
-        self.assertEqual(len(client.messages.calls), 1)
+        self.assertEqual(len(client.responses.calls), 1)
 
     def test_multiple_mutations_execute_as_one_batch(self):
         calls = []
@@ -140,6 +140,37 @@ class AssistantToolLoopTests(unittest.TestCase):
         )
 
         self.assertIn("didn't change", reply)
+
+    def test_requests_use_terra_latency_and_privacy_settings(self):
+        client = SimpleNamespace(responses=FakeResponses([text_response("hello")]))
+
+        run_assistant_turn(
+            openai_client=client,
+            model="gpt-5.6-terra",
+            system_prompt="calendar only",
+            tools=[
+                {
+                    "name": "list_events",
+                    "description": "List calendar events.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"time_min": {"type": "string"}},
+                    },
+                }
+            ],
+            messages=[{"role": "user", "content": "what's today?"}],
+            run_tool=lambda name, args: "",
+            max_tool_rounds=4,
+            safety_identifier="hashed-user-id",
+        )
+
+        request = client.responses.calls[0]
+        self.assertEqual(request["reasoning"], {"effort": "low"})
+        self.assertEqual(request["text"], {"verbosity": "low"})
+        self.assertFalse(request["store"])
+        self.assertEqual(request["safety_identifier"], "hashed-user-id")
+        self.assertEqual(request["tools"][0]["type"], "function")
+        self.assertEqual(request["tools"][0]["parameters"]["type"], "object")
 
 
 if __name__ == "__main__":

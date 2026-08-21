@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections import defaultdict, deque
@@ -30,14 +31,14 @@ class BotRuntime:
         self,
         *,
         config: BotConfig,
-        claude_client,
+        openai_client,
         calendar_client,
         tools: list,
         max_tool_rounds: int = 8,
         personality: str | None = None,
     ):
         self.config = config
-        self.claude = claude_client
+        self.openai = openai_client
         self.cal = calendar_client
         self.tools = list(tools)
         self.max_tool_rounds = max_tool_rounds
@@ -172,7 +173,7 @@ web, make payments, order food, manage wallets, or call any non-calendar service
             )
 
         text = run_assistant_turn(
-            claude_client=self.claude,
+            openai_client=self.openai,
             model=self.config.model,
             system_prompt=self.system_prompt(),
             tools=active_tools,
@@ -180,6 +181,7 @@ web, make payments, order food, manage wallets, or call any non-calendar service
             run_tool=run_tool,
             run_tool_batch=run_tool_batch,
             max_tool_rounds=self.max_tool_rounds,
+            safety_identifier=hashlib.sha256(f"telegram:{user_id}".encode()).hexdigest(),
             logger=log,
         )
         if not (text or "").strip() or text.strip().casefold() == "pass":

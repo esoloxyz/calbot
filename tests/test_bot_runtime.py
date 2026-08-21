@@ -8,13 +8,13 @@ from calbot.runtime import BotRuntime
 
 def tool_response(name, arguments, tool_id="tool-1"):
     return SimpleNamespace(
-        stop_reason="tool_use",
-        content=[
+        output_text="",
+        output=[
             SimpleNamespace(
-                type="tool_use",
+                type="function_call",
                 name=name,
-                input=arguments,
-                id=tool_id,
+                arguments=json.dumps(arguments),
+                call_id=tool_id,
             )
         ],
     )
@@ -22,13 +22,13 @@ def tool_response(name, arguments, tool_id="tool-1"):
 
 def multi_tool_response(*calls):
     return SimpleNamespace(
-        stop_reason="tool_use",
-        content=[
+        output_text="",
+        output=[
             SimpleNamespace(
-                type="tool_use",
+                type="function_call",
                 name=name,
-                input=arguments,
-                id=f"tool-{index}",
+                arguments=json.dumps(arguments),
+                call_id=f"tool-{index}",
             )
             for index, (name, arguments) in enumerate(calls, start=1)
         ],
@@ -37,12 +37,12 @@ def multi_tool_response(*calls):
 
 def text_response(text):
     return SimpleNamespace(
-        stop_reason="end_turn",
-        content=[SimpleNamespace(type="text", text=text)],
+        output_text=text,
+        output=[SimpleNamespace(type="message")],
     )
 
 
-class FakeMessages:
+class FakeResponses:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
@@ -86,7 +86,7 @@ class FakeCalendar:
 def config():
     return BotConfig(
         telegram_token="telegram-token",
-        anthropic_api_key="anthropic-key",
+        openai_api_key="openai-key",
         allowed_chat_id=-100123,
         timezone="America/New_York",
         model="test-model",
@@ -97,7 +97,7 @@ def config():
 def runtime_with(responses):
     return BotRuntime(
         config=config(),
-        claude_client=SimpleNamespace(messages=FakeMessages(responses)),
+        openai_client=SimpleNamespace(responses=FakeResponses(responses)),
         calendar_client=FakeCalendar(),
         tools=[],
     )
@@ -107,8 +107,8 @@ class BotRuntimeTests(unittest.TestCase):
     def test_acknowledgment_gets_no_tools_or_stale_calendar_history(self):
         runtime = BotRuntime(
             config=config(),
-            claude_client=SimpleNamespace(
-                messages=FakeMessages([text_response("thanks boss. we're so back.")])
+            openai_client=SimpleNamespace(
+                responses=FakeResponses([text_response("thanks boss. we're so back.")])
             ),
             calendar_client=FakeCalendar(),
             tools=[
@@ -137,11 +137,11 @@ class BotRuntimeTests(unittest.TestCase):
             user_text="good stuff calbot. youre fixed",
         )
 
-        call = runtime.claude.messages.calls[0]
+        call = runtime.openai.responses.calls[0]
         self.assertEqual(reply, "thanks boss. we're so back.")
         self.assertEqual(call["tools"], [])
         self.assertEqual(
-            call["messages"],
+            call["input"],
             [{"role": "user", "content": "good stuff calbot. youre fixed"}],
         )
         self.assertEqual(runtime.cal.calls, [])
@@ -167,8 +167,8 @@ class BotRuntimeTests(unittest.TestCase):
     def test_unoffered_mutation_is_denied_even_if_model_requests_it(self):
         runtime = BotRuntime(
             config=config(),
-            claude_client=SimpleNamespace(
-                messages=FakeMessages(
+            openai_client=SimpleNamespace(
+                responses=FakeResponses(
                     [
                         tool_response(
                             "create_event",
@@ -394,7 +394,7 @@ class BotRuntimeTests(unittest.TestCase):
     def test_personality_is_loaded_into_the_prompt_as_tone_only(self):
         runtime = BotRuntime(
             config=config(),
-            claude_client=SimpleNamespace(messages=FakeMessages([])),
+            openai_client=SimpleNamespace(responses=FakeResponses([])),
             calendar_client=FakeCalendar(),
             tools=[],
             personality="Dry, affectionate, and lightly playful.",

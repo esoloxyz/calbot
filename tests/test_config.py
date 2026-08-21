@@ -8,7 +8,7 @@ class BotConfigTests(unittest.TestCase):
         parsed = BotConfig.from_env(
             {
                 "TELEGRAM_BOT_TOKEN": "token",
-                "ANTHROPIC_API_KEY": "key",
+                "OPENAI_API_KEY": "key",
                 "ALLOWED_CHAT_ID": "-100123",
                 "GOOGLE_SERVICE_ACCOUNT_JSON": "{}",
                 "CALENDAR_ID": "shared@example.com",
@@ -19,13 +19,14 @@ class BotConfigTests(unittest.TestCase):
         self.assertEqual(parsed.allowed_user_ids, frozenset({101, 202}))
         self.assertFalse(hasattr(parsed, "tempo_bin"))
         self.assertFalse(hasattr(parsed, "bot_mode"))
+        self.assertEqual(parsed.model, "gpt-5.6-terra")
 
     def test_invalid_timezone_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "valid IANA timezone"):
             BotConfig.from_env(
                 {
                     "TELEGRAM_BOT_TOKEN": "token",
-                    "ANTHROPIC_API_KEY": "key",
+                    "OPENAI_API_KEY": "key",
                     "ALLOWED_CHAT_ID": "-100123",
                     "GOOGLE_SERVICE_ACCOUNT_JSON": "{}",
                     "CALENDAR_ID": "shared@example.com",

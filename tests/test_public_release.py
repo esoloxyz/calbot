@@ -15,7 +15,7 @@ class PublicReleaseTests(unittest.TestCase):
         env_example = (ROOT / ".env.example").read_text()
 
         self.assertRegex(env_example, r"(?m)^TELEGRAM_BOT_TOKEN=\s*$")
-        self.assertRegex(env_example, r"(?m)^ANTHROPIC_API_KEY=\s*$")
+        self.assertRegex(env_example, r"(?m)^OPENAI_API_KEY=\s*$")
         self.assertRegex(env_example, r"(?m)^GOOGLE_SERVICE_ACCOUNT_JSON=\s*$")
 
     def test_removed_integrations_are_not_configurable(self):

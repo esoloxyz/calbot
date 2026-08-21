@@ -15,7 +15,7 @@ report.
 
 ## Credentials
 
-Never include real Telegram tokens, Anthropic keys, or Google service-account
+Never include real Telegram tokens, OpenAI keys, or Google service-account
 credentials in an issue, pull request, log, or screenshot. If a credential may
 have been exposed, revoke or rotate it; deleting it from the latest commit is
 not sufficient.

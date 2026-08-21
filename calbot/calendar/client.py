@@ -1,4 +1,4 @@
-"""Google Calendar client + tool definitions for Claude."""
+"""Google Calendar client used by Calbot's model tools."""
 
 from __future__ import annotations
 

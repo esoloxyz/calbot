@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import datetime, time, timedelta
 
-import anthropic
+from openai import OpenAI
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.error import Conflict
@@ -81,8 +81,8 @@ def configure_logging() -> None:
 
 def create_runtime(config: BotConfig) -> BotRuntime:
     """Build the two external clients Calbot actually needs."""
-    claude = anthropic.Anthropic(
-        api_key=config.anthropic_api_key,
+    openai_client = OpenAI(
+        api_key=config.openai_api_key,
         timeout=30.0,
         max_retries=2,
     )
@@ -93,7 +93,7 @@ def create_runtime(config: BotConfig) -> BotRuntime:
     )
     return BotRuntime(
         config=config,
-        claude_client=claude,
+        openai_client=openai_client,
         calendar_client=calendar,
         tools=CALENDAR_TOOLS,
     )

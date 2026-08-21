@@ -25,6 +25,12 @@ class AssistantCalendarPolicyTests(unittest.TestCase):
         self.assertIn("ordinary conversational prose", CALENDAR_ASSISTANT_POLICY)
         self.assertIn("Never output JSON", CALENDAR_ASSISTANT_POLICY)
 
+    def test_rich_fields_and_attendee_notifications_have_policy(self):
+        self.assertIn("location", CALENDAR_ASSISTANT_POLICY)
+        self.assertIn("Google Meet", CALENDAR_ASSISTANT_POLICY)
+        self.assertIn("Never email attendees", CALENDAR_ASSISTANT_POLICY)
+        self.assertIn("entire series", CALENDAR_ASSISTANT_POLICY)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 # The repository's lightweight local test runner may not have Google's SDK installed.
 # CalendarClient.__init__ is bypassed in these unit tests, so small import stubs are enough.
@@ -107,6 +108,35 @@ class ConflictError(Exception):
     def __init__(self):
         super().__init__("409 Conflict")
         self.resp = SimpleNamespace(status=409)
+
+
+class CalendarAuthenticationTests(unittest.TestCase):
+    @patch("calbot.calendar.client.build")
+    @patch("calbot.calendar.client.AuthorizedHttp")
+    @patch("calbot.calendar.client.UserCredentials")
+    def test_user_oauth_is_preferred_when_fully_configured(
+        self, credentials, authorized_http, build
+    ):
+        credentials.return_value = SimpleNamespace()
+
+        CalendarClient(
+            oauth_client_id="client-id",
+            oauth_client_secret="client-secret",
+            oauth_refresh_token="refresh-token",
+            calendar_id="shared@example.com",
+            timezone_name="America/New_York",
+        )
+
+        credentials.assert_called_once_with(
+            token=None,
+            refresh_token="refresh-token",
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id="client-id",
+            client_secret="client-secret",
+            scopes=SCOPES,
+        )
+        authorized_http.assert_called_once()
+        build.assert_called_once()
 
 
 class CalendarCreateDeduplicationTests(unittest.TestCase):
@@ -367,6 +397,67 @@ class CalendarCreateDeduplicationTests(unittest.TestCase):
         self.assertEqual(result["id"], "calbot-existing")
         self.assertEqual(len(api.get_calls), 1)
 
+    def test_rich_event_fields_are_written_as_native_calendar_fields(self):
+        api = FakeEventsApi()
+
+        result = json.loads(
+            calendar_with(api).create_event(
+                title="Dinner",
+                start="2026-08-28T20:00:00-04:00",
+                end="2026-08-28T22:00:00-04:00",
+                location="Lilia, Brooklyn",
+                description="Reservation under Sarah",
+                event_timezone="America/New_York",
+                recurrence=["RRULE:FREQ=WEEKLY;COUNT=3"],
+                attendees=["sarah@example.com"],
+                reminder_minutes=[30, 1440],
+                create_google_meet=True,
+                transparency="opaque",
+                visibility="private",
+                event_status="tentative",
+                source_url="https://example.com/reservation",
+                color_id="5",
+                applies_to="both",
+                send_updates="all",
+                idempotency_key="telegram:-100:88",
+            )
+        )
+
+        request = api.insert_calls[0]
+        body = request["body"]
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(request["sendUpdates"], "all")
+        self.assertEqual(request["conferenceDataVersion"], 1)
+        self.assertEqual(body["location"], "Lilia, Brooklyn")
+        self.assertEqual(body["attendees"], [{"email": "sarah@example.com"}])
+        self.assertEqual(body["reminders"]["overrides"][0]["minutes"], 30)
+        self.assertEqual(body["recurrence"], ["RRULE:FREQ=WEEKLY;COUNT=3"])
+        self.assertEqual(body["transparency"], "opaque")
+        self.assertEqual(body["visibility"], "private")
+        self.assertEqual(body["status"], "tentative")
+        self.assertEqual(body["source"]["url"], "https://example.com/reservation")
+        self.assertEqual(
+            body["extendedProperties"]["shared"]["calbot_applies_to"], "both"
+        )
+
+    def test_invalid_attendee_email_is_rejected_before_write(self):
+        api = FakeEventsApi()
+
+        result = json.loads(
+            calendar_with(api).run_tool(
+                "create_event",
+                {
+                    "title": "Dinner",
+                    "start": "2026-08-28T20:00:00-04:00",
+                    "end": "2026-08-28T22:00:00-04:00",
+                    "attendees": ["not-an-email"],
+                },
+            )
+        )
+
+        self.assertIn("error", result)
+        self.assertEqual(api.insert_calls, [])
+
     def test_duplicate_lookup_finds_a_match_on_a_later_page(self):
         api = FakeEventsApi(
             pages={
@@ -438,6 +529,71 @@ class CalendarListAndUpdateTests(unittest.TestCase):
         self.assertEqual(first_page["next_page_token"], "")
         self.assertEqual(api.list_calls[0]["maxResults"], 50)
         self.assertEqual(api.list_calls[1]["pageToken"], "page-2")
+
+    def test_list_events_returns_fields_needed_for_real_followups(self):
+        api = FakeEventsApi(
+            pages={
+                None: {
+                    "items": [
+                        {
+                            "id": "dinner-1",
+                            "etag": "etag-1",
+                            "summary": "Dinner",
+                            "start": {
+                                "dateTime": "2026-08-28T20:00:00-04:00",
+                                "timeZone": "America/New_York",
+                            },
+                            "end": {
+                                "dateTime": "2026-08-28T22:00:00-04:00",
+                                "timeZone": "America/New_York",
+                            },
+                            "location": "Lilia",
+                            "attendees": [
+                                {
+                                    "email": "sarah@example.com",
+                                    "responseStatus": "accepted",
+                                }
+                            ],
+                            "reminders": {
+                                "useDefault": False,
+                                "overrides": [{"method": "popup", "minutes": 30}],
+                            },
+                            "hangoutLink": "https://meet.google.com/abc-defg-hij",
+                            "recurringEventId": "series-1",
+                            "originalStartTime": {
+                                "dateTime": "2026-08-28T20:00:00-04:00"
+                            },
+                            "transparency": "transparent",
+                            "visibility": "private",
+                            "source": {"url": "https://example.com/reservation"},
+                            "extendedProperties": {
+                                "shared": {"calbot_applies_to": "both"}
+                            },
+                            "htmlLink": "https://calendar.google.com/event/1",
+                        }
+                    ]
+                }
+            }
+        )
+
+        result = json.loads(
+            calendar_with(api).list_events(
+                "2026-08-28T00:00:00-04:00",
+                "2026-08-29T00:00:00-04:00",
+            )
+        )
+        event = result["events"][0]
+
+        self.assertEqual(event["etag"], "etag-1")
+        self.assertEqual(event["location"], "Lilia")
+        self.assertEqual(event["attendees"][0]["response_status"], "accepted")
+        self.assertEqual(event["reminder_minutes"], [30])
+        self.assertIn("meet.google.com", event["conference_link"])
+        self.assertEqual(event["recurring_event_id"], "series-1")
+        self.assertEqual(event["transparency"], "transparent")
+        self.assertEqual(event["source_url"], "https://example.com/reservation")
+        self.assertEqual(event["applies_to"], "both")
+        self.assertEqual(event["link"], "https://calendar.google.com/event/1")
 
     def test_list_events_clips_large_untrusted_text_fields(self):
         api = FakeEventsApi(

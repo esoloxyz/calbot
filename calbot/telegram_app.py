@@ -25,6 +25,7 @@ from calbot.concurrency import BlockingBridge
 from calbot.config import BotConfig
 from calbot.messages import visible_reply_text
 from calbot.runtime import BotRuntime
+from calbot.state import create_state_store
 
 
 log = logging.getLogger("assistant-bot")
@@ -88,6 +89,9 @@ def create_runtime(config: BotConfig) -> BotRuntime:
     )
     calendar = CalendarClient(
         service_account_json=config.google_service_account_json,
+        oauth_client_id=config.google_oauth_client_id,
+        oauth_client_secret=config.google_oauth_client_secret,
+        oauth_refresh_token=config.google_oauth_refresh_token,
         calendar_id=config.calendar_id,
         timezone_name=config.timezone,
     )
@@ -96,6 +100,7 @@ def create_runtime(config: BotConfig) -> BotRuntime:
         openai_client=openai_client,
         calendar_client=calendar,
         tools=CALENDAR_TOOLS,
+        state_store=create_state_store(config.database_url),
     )
 
 

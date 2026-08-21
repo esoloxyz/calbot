@@ -39,17 +39,26 @@ class FakeResponses:
 
 
 class AssistantToolLoopTests(unittest.TestCase):
-    def run_loop(self, responses, run_tool, run_tool_batch=None):
+    def run_loop(
+        self,
+        responses,
+        run_tool,
+        run_tool_batch=None,
+        *,
+        tools=None,
+        required_tool="",
+    ):
         client = SimpleNamespace(responses=FakeResponses(responses))
         reply = run_assistant_turn(
             openai_client=client,
             model="test",
             system_prompt="calendar only",
-            tools=[],
+            tools=tools or [],
             messages=[{"role": "user", "content": "test"}],
             run_tool=run_tool,
             run_tool_batch=run_tool_batch,
             max_tool_rounds=4,
+            required_tool=required_tool,
         )
         return reply, client
 
@@ -171,6 +180,121 @@ class AssistantToolLoopTests(unittest.TestCase):
         self.assertEqual(request["safety_identifier"], "hashed-user-id")
         self.assertEqual(request["tools"][0]["type"], "function")
         self.assertEqual(request["tools"][0]["parameters"]["type"], "object")
+        self.assertTrue(request["tools"][0]["strict"])
+        self.assertEqual(
+            request["tools"][0]["parameters"]["required"],
+            ["time_min"],
+        )
+
+    def test_optional_tool_fields_are_required_nullable_in_strict_mode(self):
+        tools = [
+            {
+                "name": "list_events",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "time_min": {"type": "string"},
+                        "page_token": {"type": "string"},
+                    },
+                    "required": ["time_min"],
+                },
+            }
+        ]
+        _, client = self.run_loop(
+            [text_response("hello")],
+            lambda name, args: "",
+            tools=tools,
+        )
+
+        schema = client.responses.calls[0]["tools"][0]["parameters"]
+        self.assertTrue(client.responses.calls[0]["tools"][0]["strict"])
+        self.assertEqual(schema["required"], ["time_min", "page_token"])
+        self.assertEqual(schema["properties"]["page_token"]["type"], ["string", "null"])
+        self.assertFalse(schema["additionalProperties"])
+
+    def test_required_calendar_read_cannot_be_skipped(self):
+        reply, client = self.run_loop(
+            [text_response("your calendar is empty")],
+            lambda name, args: "",
+            tools=[
+                {
+                    "name": "list_events",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                }
+            ],
+            required_tool="read",
+        )
+
+        self.assertIn("couldn't check", reply)
+        self.assertEqual(client.responses.calls[0]["tool_choice"], "required")
+
+    def test_required_calendar_write_cannot_end_in_a_refusal(self):
+        reply, _ = self.run_loop(
+            [text_response("i only have read access")],
+            lambda name, args: "",
+            tools=[
+                {
+                    "name": "create_event",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                }
+            ],
+            required_tool="mutation",
+        )
+
+        self.assertIn("couldn't change", reply)
+
+    def test_update_id_cannot_be_guessed_before_a_completed_read_round(self):
+        calls = []
+        tools = [
+            {
+                "name": name,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            }
+            for name in ("list_events", "update_event")
+        ]
+
+        reply, _ = self.run_loop(
+            [
+                tool_response(
+                    (
+                        "list_events",
+                        {},
+                    ),
+                    (
+                        "update_event",
+                        {},
+                    ),
+                ),
+                tool_response(("update_event", {})),
+            ],
+            lambda name, args: calls.append(name)
+            or (
+                ToolExecutionResult(
+                    output='{"status":"updated"}',
+                    user_reply="done. dinner was updated.",
+                    halt=True,
+                )
+                if name == "update_event"
+                else '{"events":[{"id":"real-event"}]}'
+            ),
+            tools=tools,
+            required_tool="mutation",
+        )
+
+        self.assertEqual(reply, "done. dinner was updated.")
+        self.assertEqual(calls, ["list_events", "update_event"])
 
 
 if __name__ == "__main__":

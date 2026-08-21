@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from copy import deepcopy
 from collections.abc import Callable
 
 from calbot.assistant.execution import (
@@ -19,6 +20,46 @@ log = logging.getLogger("assistant-bot")
 MAX_TOOL_CALLS_PER_TURN = 8
 MAX_TOOL_RESULT_CHARS_PER_TURN = 64 * 1024
 MAX_ASSISTANT_TURN_SECONDS = 120
+
+
+def _nullable(schema: dict) -> dict:
+    """Return a strict-schema nullable copy without weakening validation."""
+    result = deepcopy(schema)
+    schema_type = result.get("type")
+    if isinstance(schema_type, str):
+        result["type"] = [schema_type, "null"]
+    elif isinstance(schema_type, list) and "null" not in schema_type:
+        result["type"] = [*schema_type, "null"]
+    else:
+        result["anyOf"] = [deepcopy(schema), {"type": "null"}]
+    if isinstance(result.get("enum"), list) and None not in result["enum"]:
+        result["enum"] = [*result["enum"], None]
+    return result
+
+
+def strict_function_schema(schema: dict) -> dict:
+    """Convert optional JSON-schema properties to strict nullable properties."""
+    result = deepcopy(schema)
+    if result.get("type") == "object":
+        properties = result.get("properties", {})
+        originally_required = set(result.get("required", []))
+        strict_properties = {}
+        for name, child in properties.items():
+            strict_child = strict_function_schema(child)
+            strict_properties[name] = (
+                strict_child if name in originally_required else _nullable(strict_child)
+            )
+        result["properties"] = strict_properties
+        result["required"] = list(properties)
+        result["additionalProperties"] = False
+    if result.get("type") == "array" and isinstance(result.get("items"), dict):
+        result["items"] = strict_function_schema(result["items"])
+    return result
+
+
+def _without_nulls(arguments: dict) -> dict:
+    """Restore omitted optional values represented as null in strict tool calls."""
+    return {key: value for key, value in arguments.items() if value is not None}
 
 
 def _as_execution(value) -> ToolExecutionResult:
@@ -37,6 +78,7 @@ def run_assistant_turn(
     run_tool: Callable[[str, dict], str],
     run_tool_batch=None,
     max_tool_rounds: int,
+    required_tool: str = "",
     safety_identifier: str = "",
     logger=None,
 ) -> str:
@@ -48,16 +90,24 @@ def run_assistant_turn(
             "type": "function",
             "name": tool["name"],
             "description": tool.get("description", ""),
-            "parameters": tool["input_schema"],
-            # Existing calendar schemas intentionally have optional fields. The
-            # executor remains the final validation boundary for every call.
-            "strict": False,
+            "parameters": strict_function_schema(tool["input_schema"]),
+            "strict": True,
         }
         for tool in tools
     ]
     started_at = time.monotonic()
     tool_calls = 0
     result_chars = 0
+    called_tools: list[str] = []
+
+    def requirement_met() -> bool:
+        if not required_tool:
+            return True
+        if required_tool == "read":
+            return "list_events" in called_tools
+        if required_tool == "mutation":
+            return any(name in CALENDAR_MUTATION_TOOLS for name in called_tools)
+        raise ValueError(f"Unsupported required_tool value: {required_tool}")
 
     for _ in range(max_tool_rounds):
         if time.monotonic() - started_at > MAX_ASSISTANT_TURN_SECONDS:
@@ -73,6 +123,8 @@ def run_assistant_turn(
             "text": {"verbosity": "low"},
             "store": False,
         }
+        if openai_tools and not requirement_met():
+            request["tool_choice"] = "required"
         if safety_identifier:
             request["safety_identifier"] = safety_identifier
         response = openai_client.responses.create(
@@ -83,6 +135,21 @@ def run_assistant_turn(
         ]
         if not function_calls:
             text = (response.output_text or "").strip()
+            if not requirement_met():
+                # After a real calendar lookup, an ambiguity question is a valid
+                # outcome even though no write ran. Everything else fails closed.
+                if (
+                    required_tool == "mutation"
+                    and "list_events" in called_tools
+                    and text.endswith("?")
+                    and not claims_calendar_success(text)
+                ):
+                    return text
+                action = "change" if required_tool == "mutation" else "check"
+                return (
+                    f"i couldn't {action} the calendar reliably just now. "
+                    "please try again."
+                )
             if claims_calendar_success(text):
                 return (
                     "i didn't change the calendar because no verified calendar "
@@ -106,7 +173,63 @@ def run_assistant_turn(
             except (TypeError, ValueError, json.JSONDecodeError):
                 active_log.warning("tool %s returned invalid arguments", call.name)
                 arguments = {}
-            parsed_calls.append((call, arguments))
+            parsed_calls.append((call, _without_nulls(arguments)))
+
+        # An update/delete ID must come from a completed calendar read, not from
+        # the model guessing an opaque ID in the same parallel tool response.
+        needs_prior_read = (
+            any(
+                call.name in {"update_event", "delete_event"}
+                for call, _ in parsed_calls
+            )
+            and "list_events" not in called_tools
+        )
+        if needs_prior_read:
+            dependency_outputs = []
+            for call, arguments in parsed_calls:
+                if call.name == "list_events":
+                    active_log.info("tool %s started", call.name)
+                    execution = _as_execution(run_tool(call.name, arguments))
+                    output = str(execution.output)
+                    remaining = MAX_TOOL_RESULT_CHARS_PER_TURN - result_chars
+                    if len(output) > remaining:
+                        output = json.dumps(
+                            {
+                                "error": (
+                                    "Calendar result exceeded the safe context limit"
+                                ),
+                                "error_code": "tool_result_budget_exceeded",
+                            }
+                        )
+                    else:
+                        result_chars += len(output)
+                    called_tools.append(call.name)
+                    active_log.info(
+                        "tool %s completed %s", call.name, _tool_outcome(output)
+                    )
+                    if execution.halt:
+                        return execution.user_reply or (
+                            "i couldn't check the calendar. please try again."
+                        )
+                else:
+                    output = json.dumps(
+                        {
+                            "error": (
+                                "Use list_events in an earlier tool round before "
+                                "updating or deleting an event."
+                            ),
+                            "error_code": "calendar_read_required_first",
+                        }
+                    )
+                dependency_outputs.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": output,
+                    }
+                )
+            input_items.extend(dependency_outputs)
+            continue
 
         mutations = [
             (call, arguments)
@@ -119,6 +242,7 @@ def run_assistant_turn(
                     [(call.name, arguments) for call, arguments in mutations]
                 )
             )
+            called_tools.extend(call.name for call, _ in mutations)
             return execution.user_reply or (
                 "i couldn't verify those calendar changes. please try again."
             )
@@ -127,6 +251,7 @@ def run_assistant_turn(
         for call, arguments in parsed_calls:
             active_log.info("tool %s started", call.name)
             execution = _as_execution(run_tool(call.name, arguments))
+            called_tools.append(call.name)
             output = str(execution.output)
             remaining = MAX_TOOL_RESULT_CHARS_PER_TURN - result_chars
             if len(output) > remaining:

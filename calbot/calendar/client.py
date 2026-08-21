@@ -9,18 +9,23 @@ import os
 import re
 import unicodedata
 from datetime import date, datetime, time, timedelta, timezone
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import httplib2
 from google_auth_httplib2 import AuthorizedHttp
 from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials as UserCredentials
 from googleapiclient.discovery import build
 
 from calbot.calendar.contracts import (
     CALENDAR_FIELD_LIMITS,
     CALENDAR_MUTATION_FIELDS,
-    MAX_EVENT_DESCRIPTION,
+    MAX_EVENT_ATTENDEES,
+    MAX_EVENT_DESCRIPTION_CONTEXT,
     MAX_EVENT_LOCATION,
+    MAX_EVENT_RECURRENCE_LINES,
+    MAX_EVENT_REMINDERS,
     MAX_EVENT_TITLE,
     MAX_LIST_EVENTS,
     MAX_LIST_PAGES,
@@ -29,6 +34,7 @@ from calbot.calendar.contracts import (
 
 log = logging.getLogger("assistant-bot")
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+_EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 class CalendarClient:
@@ -36,14 +42,36 @@ class CalendarClient:
         self,
         *,
         service_account_json: str = "",
+        oauth_client_id: str = "",
+        oauth_client_secret: str = "",
+        oauth_refresh_token: str = "",
         calendar_id: str = "",
         timezone_name: str = "",
     ):
-        raw = service_account_json or os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-        info = json.loads(raw)
-        creds = service_account.Credentials.from_service_account_info(
-            info, scopes=SCOPES
+        oauth_client_id = oauth_client_id or os.environ.get(
+            "GOOGLE_OAUTH_CLIENT_ID", ""
         )
+        oauth_client_secret = oauth_client_secret or os.environ.get(
+            "GOOGLE_OAUTH_CLIENT_SECRET", ""
+        )
+        oauth_refresh_token = oauth_refresh_token or os.environ.get(
+            "GOOGLE_OAUTH_REFRESH_TOKEN", ""
+        )
+        if all((oauth_client_id, oauth_client_secret, oauth_refresh_token)):
+            creds = UserCredentials(
+                token=None,
+                refresh_token=oauth_refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=oauth_client_id,
+                client_secret=oauth_client_secret,
+                scopes=SCOPES,
+            )
+        else:
+            raw = service_account_json or os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+            info = json.loads(raw)
+            creds = service_account.Credentials.from_service_account_info(
+                info, scopes=SCOPES
+            )
         authorized_http = AuthorizedHttp(creds, http=httplib2.Http(timeout=30))
         self.service = build(
             "calendar",
@@ -138,6 +166,91 @@ class CalendarClient:
         if bounds[1] <= bounds[0]:
             raise ValueError("event end must be after start")
 
+    @staticmethod
+    def _validate_event_options(
+        *,
+        event_timezone: str = "",
+        recurrence: list[str] | None = None,
+        attendees: list[str] | None = None,
+        reminder_minutes: list[int] | None = None,
+        create_google_meet: bool = False,
+        transparency: str = "",
+        visibility: str = "",
+        event_status: str = "",
+        source_url: str = "",
+        color_id: str = "",
+        applies_to: str = "",
+        send_updates: str = "none",
+        recurrence_scope: str = "this_event",
+    ) -> None:
+        if event_timezone:
+            if not isinstance(event_timezone, str) or len(event_timezone) > 100:
+                raise ValueError("event_timezone is invalid")
+            ZoneInfo(event_timezone)
+        if recurrence is not None:
+            if (
+                not isinstance(recurrence, list)
+                or len(recurrence) > MAX_EVENT_RECURRENCE_LINES
+            ):
+                raise ValueError("recurrence is invalid")
+            if not all(
+                isinstance(line, str)
+                and len(line) <= 500
+                and line.startswith(("RRULE:", "RDATE:", "EXDATE:"))
+                for line in recurrence
+            ):
+                raise ValueError("recurrence contains invalid lines")
+        if attendees is not None:
+            if not isinstance(attendees, list) or len(attendees) > MAX_EVENT_ATTENDEES:
+                raise ValueError("attendees is invalid")
+            if not all(
+                isinstance(email, str) and len(email) <= 320 and _EMAIL.fullmatch(email)
+                for email in attendees
+            ):
+                raise ValueError("attendees contains invalid email addresses")
+        if reminder_minutes is not None:
+            if (
+                not isinstance(reminder_minutes, list)
+                or len(reminder_minutes) > MAX_EVENT_REMINDERS
+                or not all(
+                    type(minutes) is int and 0 <= minutes <= 40320
+                    for minutes in reminder_minutes
+                )
+            ):
+                raise ValueError("reminder_minutes contains invalid offsets")
+        if type(create_google_meet) is not bool:
+            raise ValueError("create_google_meet must be a boolean")
+        enums = {
+            "transparency": (transparency, {"", "opaque", "transparent"}),
+            "visibility": (
+                visibility,
+                {"", "default", "public", "private", "confidential"},
+            ),
+            "event_status": (event_status, {"", "confirmed", "tentative"}),
+            "send_updates": (send_updates, {"none", "all", "externalOnly"}),
+            "recurrence_scope": (
+                recurrence_scope,
+                {"this_event", "entire_series"},
+            ),
+        }
+        for field_name, (value, allowed) in enums.items():
+            if value not in allowed:
+                raise ValueError(f"{field_name} is invalid")
+        for field_name, value in {
+            "source_url": source_url,
+            "color_id": color_id,
+            "applies_to": applies_to,
+        }.items():
+            if (
+                not isinstance(value, str)
+                or len(value) > CALENDAR_FIELD_LIMITS[field_name]
+            ):
+                raise ValueError(f"{field_name} is invalid")
+        if source_url:
+            parsed = urlparse(source_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("source_url must be an http or https URL")
+
     def _event_bounds(self, event: dict) -> tuple[datetime, datetime] | None:
         event_start = event.get("start", {})
         event_end = event.get("end", {})
@@ -153,23 +266,8 @@ class CalendarClient:
     ) -> bool:
         return first[0] < second[1] and second[0] < first[1]
 
-    @staticmethod
-    def _duplicate_result(event: dict) -> str:
-        return json.dumps(
-            {
-                "status": "duplicate",
-                "id": event.get("id", ""),
-                "title": event.get("summary", "(no title)"),
-                "start": event.get("start", {}).get(
-                    "dateTime", event.get("start", {}).get("date", "")
-                ),
-                "end": event.get("end", {}).get(
-                    "dateTime", event.get("end", {}).get("date", "")
-                ),
-                "all_day": "date" in event.get("start", {}),
-                "link": event.get("htmlLink", ""),
-            }
-        )
+    def _duplicate_result(self, event: dict) -> str:
+        return json.dumps({"status": "duplicate", **self._event_payload(event)})
 
     def _find_duplicate_event(
         self,
@@ -260,6 +358,80 @@ class CalendarClient:
             return text, False
         return text[: limit - 1] + "…", True
 
+    def _event_payload(self, event: dict) -> dict:
+        """Return a bounded, useful event representation for the model and ledger."""
+        title, title_clipped = self._clip_text(
+            event.get("summary", "(no title)"), MAX_EVENT_TITLE
+        )
+        location, location_clipped = self._clip_text(
+            event.get("location", ""), MAX_EVENT_LOCATION
+        )
+        description, description_clipped = self._clip_text(
+            event.get("description", ""), MAX_EVENT_DESCRIPTION_CONTEXT
+        )
+        start = event.get("start", {})
+        end = event.get("end", {})
+        attendees = []
+        for attendee in event.get("attendees", [])[:MAX_EVENT_ATTENDEES]:
+            if not isinstance(attendee, dict):
+                continue
+            email, _ = self._clip_text(attendee.get("email", ""), 320)
+            display_name, _ = self._clip_text(attendee.get("displayName", ""), 200)
+            attendees.append(
+                {
+                    "email": email,
+                    "display_name": display_name,
+                    "response_status": attendee.get("responseStatus", ""),
+                    "organizer": bool(attendee.get("organizer")),
+                    "self": bool(attendee.get("self")),
+                }
+            )
+        conference_link = event.get("hangoutLink", "")
+        if not conference_link:
+            for entry in event.get("conferenceData", {}).get("entryPoints", []):
+                if entry.get("entryPointType") == "video":
+                    conference_link = entry.get("uri", "")
+                    break
+        reminder_data = event.get("reminders", {})
+        reminder_minutes = [
+            override.get("minutes")
+            for override in reminder_data.get("overrides", [])[:MAX_EVENT_REMINDERS]
+            if override.get("method") == "popup"
+            and type(override.get("minutes")) is int
+        ]
+        private_data = event.get("extendedProperties", {}).get("shared", {})
+        source = event.get("source", {})
+        return {
+            "id": event.get("id", ""),
+            "etag": event.get("etag", ""),
+            "title": title,
+            "start": start.get("dateTime", start.get("date", "")),
+            "end": end.get("dateTime", end.get("date", "")),
+            "all_day": "date" in start,
+            "timezone": start.get("timeZone", self.timezone),
+            "location": location,
+            "description": description,
+            "attendees": attendees,
+            "reminder_minutes": reminder_minutes,
+            "uses_default_reminders": bool(reminder_data.get("useDefault")),
+            "conference_link": conference_link,
+            "recurrence": event.get("recurrence", [])[:MAX_EVENT_RECURRENCE_LINES],
+            "recurring_event_id": event.get("recurringEventId", ""),
+            "original_start": event.get("originalStartTime", {}).get(
+                "dateTime", event.get("originalStartTime", {}).get("date", "")
+            ),
+            "event_status": event.get("status", ""),
+            "transparency": event.get("transparency", "opaque"),
+            "visibility": event.get("visibility", "default"),
+            "color_id": event.get("colorId", ""),
+            "source_url": source.get("url", ""),
+            "applies_to": private_data.get("calbot_applies_to", ""),
+            "link": event.get("htmlLink", ""),
+            "content_truncated": any(
+                (title_clipped, location_clipped, description_clipped)
+            ),
+        }
+
     def list_events(self, time_min: str, time_max: str, page_token: str = "") -> str:
         if not all(isinstance(value, str) for value in (time_min, time_max)):
             raise ValueError("calendar time bounds must be strings")
@@ -298,30 +470,7 @@ class CalendarClient:
                 raise ValueError("Google Calendar returned invalid events")
             remaining = MAX_LIST_TOTAL_EVENTS - len(events)
             for event in items[: min(MAX_LIST_EVENTS, remaining)]:
-                title, title_clipped = self._clip_text(
-                    event.get("summary", "(no title)"), MAX_EVENT_TITLE
-                )
-                location, location_clipped = self._clip_text(
-                    event.get("location", ""), MAX_EVENT_LOCATION
-                )
-                description, description_clipped = self._clip_text(
-                    event.get("description", ""), MAX_EVENT_DESCRIPTION
-                )
-                events.append(
-                    {
-                        "id": event["id"],
-                        "title": title,
-                        "start": event["start"].get(
-                            "dateTime", event["start"].get("date")
-                        ),
-                        "end": event["end"].get("dateTime", event["end"].get("date")),
-                        "location": location,
-                        "description": description,
-                        "content_truncated": any(
-                            (title_clipped, location_clipped, description_clipped)
-                        ),
-                    }
-                )
+                events.append(self._event_payload(event))
             next_token = result.get("nextPageToken", "")
             if not isinstance(next_token, str) or len(next_token) > 2048:
                 raise ValueError("Google Calendar returned an invalid page token")
@@ -366,11 +515,37 @@ class CalendarClient:
         location: str = "",
         description: str = "",
         all_day: bool = False,
+        event_timezone: str = "",
+        recurrence: list[str] | None = None,
+        attendees: list[str] | None = None,
+        reminder_minutes: list[int] | None = None,
+        create_google_meet: bool = False,
+        transparency: str = "",
+        visibility: str = "",
+        event_status: str = "",
+        source_url: str = "",
+        color_id: str = "",
+        applies_to: str = "",
+        send_updates: str = "none",
         idempotency_key: str = "",
     ) -> str:
         start, end = self._normalize_create_bounds(start, end, all_day)
         self._validate_create_event(
             title, start, end, all_day, location=location, description=description
+        )
+        self._validate_event_options(
+            event_timezone=event_timezone,
+            recurrence=recurrence,
+            attendees=attendees,
+            reminder_minutes=reminder_minutes,
+            create_google_meet=create_google_meet,
+            transparency=transparency,
+            visibility=visibility,
+            event_status=event_status,
+            source_url=source_url,
+            color_id=color_id,
+            applies_to=applies_to,
+            send_updates=send_updates,
         )
         duplicate = self._find_duplicate_event(title, start, end, all_day)
         if duplicate:
@@ -380,8 +555,9 @@ class CalendarClient:
             body_start = {"date": start}
             body_end = {"date": end}
         else:
-            body_start = {"dateTime": start, "timeZone": self.timezone}
-            body_end = {"dateTime": end, "timeZone": self.timezone}
+            timezone_name = event_timezone or self.timezone
+            body_start = {"dateTime": start, "timeZone": timezone_name}
+            body_end = {"dateTime": end, "timeZone": timezone_name}
 
         event = {
             "id": self._deterministic_event_id(title, start, all_day, idempotency_key),
@@ -393,13 +569,47 @@ class CalendarClient:
             event["location"] = location
         if description:
             event["description"] = description
+        if recurrence is not None:
+            event["recurrence"] = recurrence
+        if attendees is not None:
+            event["attendees"] = [{"email": email} for email in attendees]
+        if reminder_minutes is not None:
+            event["reminders"] = {
+                "useDefault": False,
+                "overrides": [
+                    {"method": "popup", "minutes": minutes}
+                    for minutes in reminder_minutes
+                ],
+            }
+        if transparency:
+            event["transparency"] = transparency
+        if visibility:
+            event["visibility"] = visibility
+        if event_status:
+            event["status"] = event_status
+        if source_url:
+            event["source"] = {"title": "Calbot source", "url": source_url}
+        if color_id:
+            event["colorId"] = color_id
+        if applies_to:
+            event["extendedProperties"] = {"shared": {"calbot_applies_to": applies_to}}
+        if create_google_meet:
+            event["conferenceData"] = {
+                "createRequest": {
+                    "requestId": hashlib.sha256(event["id"].encode()).hexdigest()[:32],
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
 
         try:
-            created = (
-                self.service.events()
-                .insert(calendarId=self.calendar_id, body=event)
-                .execute()
-            )
+            insert_args = {
+                "calendarId": self.calendar_id,
+                "body": event,
+                "sendUpdates": send_updates,
+            }
+            if create_google_meet:
+                insert_args["conferenceDataVersion"] = 1
+            created = self.service.events().insert(**insert_args).execute()
         except Exception as exc:
             if getattr(getattr(exc, "resp", None), "status", None) != 409:
                 raise
@@ -411,17 +621,17 @@ class CalendarClient:
                 .execute()
             )
             return self._duplicate_result(created)
-        return json.dumps(
+        payload = self._event_payload(created)
+        payload.update(
             {
-                "status": "created",
-                "id": created["id"],
-                "title": title,
-                "start": start,
-                "end": end,
+                "id": created.get("id", event["id"]),
+                "title": created.get("summary", title),
+                "start": payload.get("start") or start,
+                "end": payload.get("end") or end,
                 "all_day": all_day,
-                "link": created.get("htmlLink", ""),
             }
         )
+        return json.dumps({"status": "created", **payload})
 
     def preview_mutation(self, name: str, args: dict) -> dict:
         """Return user-reviewable data without performing a calendar write."""
@@ -439,6 +649,20 @@ class CalendarClient:
                 location=args.get("location", ""),
                 description=args.get("description", ""),
             )
+            self._validate_event_options(
+                event_timezone=args.get("event_timezone", ""),
+                recurrence=args.get("recurrence"),
+                attendees=args.get("attendees"),
+                reminder_minutes=args.get("reminder_minutes"),
+                create_google_meet=args.get("create_google_meet", False),
+                transparency=args.get("transparency", ""),
+                visibility=args.get("visibility", ""),
+                event_status=args.get("event_status", ""),
+                source_url=args.get("source_url", ""),
+                color_id=args.get("color_id", ""),
+                applies_to=args.get("applies_to", ""),
+                send_updates=args.get("send_updates", "none"),
+            )
             normalized = dict(args)
             normalized.update({"start": start, "end": end})
             return {
@@ -452,22 +676,39 @@ class CalendarClient:
         if name not in {"update_event", "delete_event"}:
             raise ValueError(f"Unsupported calendar mutation: {name}")
 
+        self._validate_event_options(
+            event_timezone=args.get("event_timezone", ""),
+            recurrence=args.get("recurrence"),
+            attendees=args.get("attendees"),
+            reminder_minutes=args.get("reminder_minutes"),
+            create_google_meet=args.get("create_google_meet", False),
+            transparency=args.get("transparency", ""),
+            visibility=args.get("visibility", ""),
+            event_status=args.get("event_status", ""),
+            source_url=args.get("source_url", ""),
+            color_id=args.get("color_id", ""),
+            applies_to=args.get("applies_to", ""),
+            send_updates=args.get("send_updates", "none"),
+            recurrence_scope=args.get("recurrence_scope", "this_event"),
+        )
         event_id = args["event_id"]
         event = (
             self.service.events()
             .get(calendarId=self.calendar_id, eventId=event_id)
             .execute()
         )
-        current_event = {
-            "id": event_id,
-            "title": event.get("summary", "(no title)"),
-            "start": event.get("start", {}).get(
-                "dateTime", event.get("start", {}).get("date", "")
-            ),
-            "end": event.get("end", {}).get(
-                "dateTime", event.get("end", {}).get("date", "")
-            ),
-        }
+        resolved_event_id = event_id
+        if args.get("recurrence_scope") == "entire_series" and event.get(
+            "recurringEventId"
+        ):
+            resolved_event_id = event["recurringEventId"]
+            event = (
+                self.service.events()
+                .get(calendarId=self.calendar_id, eventId=resolved_event_id)
+                .execute()
+            )
+        current_event = self._event_payload(event)
+        current_event["id"] = resolved_event_id
         event_etag = event.get("etag")
         if not isinstance(event_etag, str) or not event_etag:
             raise ValueError("Google Calendar did not return an event version")
@@ -475,6 +716,7 @@ class CalendarClient:
             "action": name,
             "current_event": current_event,
             "event_etag": event_etag,
+            "resolved_event_id": resolved_event_id,
         }
         if name == "update_event":
             preview["changes"] = {
@@ -565,9 +807,12 @@ class CalendarClient:
 
         if new_all_day:
             return {"date": new_start.isoformat()}, {"date": new_end.isoformat()}
+        timezone_name = fields.get("event_timezone") or old_start.get(
+            "timeZone", self.timezone
+        )
         return (
-            {"dateTime": new_start.isoformat(), "timeZone": self.timezone},
-            {"dateTime": new_end.isoformat(), "timeZone": self.timezone},
+            {"dateTime": new_start.isoformat(), "timeZone": timezone_name},
+            {"dateTime": new_end.isoformat(), "timeZone": timezone_name},
         )
 
     def update_event(self, event_id: str, *, expected_etag: str = "", **fields) -> str:
@@ -578,6 +823,23 @@ class CalendarClient:
         unsupported = set(fields) - set(CALENDAR_MUTATION_FIELDS["update_event"])
         if unsupported:
             raise ValueError("calendar update has unsupported fields")
+        send_updates = fields.pop("send_updates", "none")
+        recurrence_scope = fields.pop("recurrence_scope", "this_event")
+        self._validate_event_options(
+            event_timezone=fields.get("event_timezone", ""),
+            recurrence=fields.get("recurrence"),
+            attendees=fields.get("attendees"),
+            reminder_minutes=fields.get("reminder_minutes"),
+            create_google_meet=fields.get("create_google_meet", False),
+            transparency=fields.get("transparency", ""),
+            visibility=fields.get("visibility", ""),
+            event_status=fields.get("event_status", ""),
+            source_url=fields.get("source_url", ""),
+            color_id=fields.get("color_id", ""),
+            applies_to=fields.get("applies_to", ""),
+            send_updates=send_updates,
+            recurrence_scope=recurrence_scope,
+        )
         for field_name in set(fields) & set(CALENDAR_FIELD_LIMITS):
             value = fields[field_name]
             if not isinstance(value, str):
@@ -616,26 +878,82 @@ class CalendarClient:
             else:
                 event[field] = fields[field]
 
-        request = self.service.events().update(
-            calendarId=self.calendar_id, eventId=event_id, body=event
-        )
+        simple_mappings = {
+            "transparency": "transparency",
+            "visibility": "visibility",
+            "event_status": "status",
+            "color_id": "colorId",
+        }
+        for field_name, google_name in simple_mappings.items():
+            if field_name not in fields:
+                continue
+            if fields[field_name] == "":
+                event.pop(google_name, None)
+            else:
+                event[google_name] = fields[field_name]
+        if "recurrence" in fields:
+            if fields["recurrence"]:
+                event["recurrence"] = list(fields["recurrence"])
+            else:
+                event.pop("recurrence", None)
+        if "attendees" in fields:
+            event["attendees"] = [{"email": email} for email in fields["attendees"]]
+        if "reminder_minutes" in fields:
+            event["reminders"] = {
+                "useDefault": False,
+                "overrides": [
+                    {"method": "popup", "minutes": minutes}
+                    for minutes in fields["reminder_minutes"]
+                ],
+            }
+        if "source_url" in fields:
+            if fields["source_url"]:
+                event["source"] = {
+                    "title": "Calbot source",
+                    "url": fields["source_url"],
+                }
+            else:
+                event.pop("source", None)
+        if "applies_to" in fields:
+            extended = event.setdefault("extendedProperties", {})
+            shared = extended.setdefault("shared", {})
+            if fields["applies_to"]:
+                shared["calbot_applies_to"] = fields["applies_to"]
+            else:
+                shared.pop("calbot_applies_to", None)
+        create_google_meet = fields.get("create_google_meet", False)
+        if create_google_meet:
+            event["conferenceData"] = {
+                "createRequest": {
+                    "requestId": hashlib.sha256(
+                        f"{event_id}:{expected_etag}".encode()
+                    ).hexdigest()[:32],
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
+
+        update_args = {
+            "calendarId": self.calendar_id,
+            "eventId": event_id,
+            "body": event,
+            "sendUpdates": send_updates,
+        }
+        if create_google_meet:
+            update_args["conferenceDataVersion"] = 1
+        request = self.service.events().update(**update_args)
         if expected_etag and hasattr(request, "headers"):
             request.headers["If-Match"] = expected_etag
         updated = request.execute()
-        updated_start = updated.get("start", {})
-        updated_end = updated.get("end", {})
-        return json.dumps(
-            {
-                "status": "updated",
-                "id": updated["id"],
-                "title": updated.get("summary", "(no title)"),
-                "start": updated_start.get("dateTime", updated_start.get("date", "")),
-                "end": updated_end.get("dateTime", updated_end.get("date", "")),
-                "all_day": "date" in updated_start,
-            }
-        )
+        return json.dumps({"status": "updated", **self._event_payload(updated)})
 
-    def delete_event(self, event_id: str, *, expected_etag: str = "") -> str:
+    def delete_event(
+        self,
+        event_id: str,
+        *,
+        expected_etag: str = "",
+        send_updates: str = "none",
+    ) -> str:
+        self._validate_event_options(send_updates=send_updates)
         if expected_etag:
             event = (
                 self.service.events()
@@ -653,7 +971,9 @@ class CalendarClient:
                     }
                 )
         request = self.service.events().delete(
-            calendarId=self.calendar_id, eventId=event_id
+            calendarId=self.calendar_id,
+            eventId=event_id,
+            sendUpdates=send_updates,
         )
         if expected_etag and hasattr(request, "headers"):
             request.headers["If-Match"] = expected_etag
@@ -671,6 +991,25 @@ class CalendarClient:
                     page_token=args.get("page_token", ""),
                 )
             if name == "create_event":
+                options = {
+                    key: value
+                    for key, value in args.items()
+                    if key
+                    in {
+                        "event_timezone",
+                        "recurrence",
+                        "attendees",
+                        "reminder_minutes",
+                        "create_google_meet",
+                        "transparency",
+                        "visibility",
+                        "event_status",
+                        "source_url",
+                        "color_id",
+                        "applies_to",
+                        "send_updates",
+                    }
+                }
                 return self.create_event(
                     title=args["title"],
                     start=args["start"],
@@ -679,6 +1018,7 @@ class CalendarClient:
                     description=args.get("description", ""),
                     all_day=args.get("all_day", False),
                     idempotency_key=args.get("_idempotency_key", ""),
+                    **options,
                 )
             if name == "update_event":
                 event_id = args["event_id"]
@@ -696,6 +1036,7 @@ class CalendarClient:
                 return self.delete_event(
                     args["event_id"],
                     expected_etag=args.get("_expected_etag", ""),
+                    send_updates=args.get("send_updates", "none"),
                 )
             return json.dumps({"error": f"Unknown tool: {name}"})
         except Exception as exc:  # Return API failures to the bounded caller.

@@ -92,6 +92,35 @@ class CalendarActionReplyTests(unittest.TestCase):
             ("done. late dinner was updated for wednesday, july 29 from 8pm to 10pm."),
         )
 
+    def test_rich_create_confirmation_names_location_and_requested_features(self):
+        reply = calendar_action_reply(
+            "create_event",
+            {
+                "title": "Dinner",
+                "start": "2026-07-28T19:00:00-04:00",
+                "end": "2026-07-28T21:00:00-04:00",
+                "location": "Lilia",
+                "create_google_meet": True,
+                "reminder_minutes": [30],
+                "attendees": ["sarah@example.com"],
+                "send_updates": "all",
+            },
+            json.dumps(
+                {
+                    "status": "created",
+                    "location": "Lilia",
+                    "conference_link": "https://meet.google.com/abc-defg-hij",
+                    "reminder_minutes": [30],
+                    "attendees": [{"email": "sarah@example.com"}],
+                }
+            ),
+        )
+
+        self.assertIn("at lilia", reply)
+        self.assertIn("google meet added", reply)
+        self.assertIn("30-minute reminder set", reply)
+        self.assertIn("1 attendee invite sent", reply)
+
 
 if __name__ == "__main__":
     unittest.main()

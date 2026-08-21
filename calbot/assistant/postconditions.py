@@ -96,12 +96,40 @@ def calendar_action_reply(name: str, args: dict, output: str) -> str | None:
         result = {"error": "the calendar returned an unreadable response"}
 
     final_event = dict(args)
-    for field in ("title", "start", "end", "all_day"):
+    for field in (
+        "title",
+        "start",
+        "end",
+        "all_day",
+        "location",
+        "conference_link",
+        "attendees",
+        "reminder_minutes",
+    ):
         if field in result:
             final_event[field] = result[field]
     title = str(final_event.get("title") or "the event").lower()
     schedule = _friendly_schedule(final_event)
     timing = f" for {schedule}" if schedule else ""
+    location = str(final_event.get("location") or "").strip().lower()
+    location_text = f" at {location}" if location else ""
+    extras = []
+    if final_event.get("conference_link"):
+        extras.append("google meet added")
+    elif final_event.get("create_google_meet"):
+        extras.append("google meet requested")
+    reminders = final_event.get("reminder_minutes")
+    if isinstance(reminders, list) and len(reminders) == 1:
+        extras.append(f"{reminders[0]}-minute reminder set")
+    attendees = final_event.get("attendees")
+    if (
+        isinstance(attendees, list)
+        and attendees
+        and final_event.get("send_updates") == "all"
+    ):
+        count = len(attendees)
+        extras.append(f"{count} attendee invite{'s' if count != 1 else ''} sent")
+    detail_text = f" {'; '.join(extras)}." if extras else ""
 
     error = result.get("error")
     if error:
@@ -122,9 +150,9 @@ def calendar_action_reply(name: str, args: dict, output: str) -> str | None:
     if name == "create_event" and status == "duplicate":
         return f"that's already on the calendar: {title}{timing}."
     if name == "create_event" and status == "created":
-        return f"done. {title} is on the calendar{timing}."
+        return f"done. {title} is on the calendar{timing}{location_text}.{detail_text}"
     if name == "update_event" and status == "updated":
-        return f"done. {title} was updated{timing}."
+        return f"done. {title} was updated{timing}{location_text}.{detail_text}"
     if name == "delete_event" and status == "deleted":
         location = f" from {schedule}" if schedule else ""
         return f"done. {title} was deleted{location}."

@@ -2,6 +2,7 @@ import json
 import unittest
 from types import SimpleNamespace
 
+from calbot.calendar.contracts import TOOLS
 from calbot.config import BotConfig
 from calbot.runtime import BotRuntime
 
@@ -39,6 +40,27 @@ def text_response(text):
     return SimpleNamespace(
         output_text=text,
         output=[SimpleNamespace(type="message")],
+    )
+
+
+def plan_response(
+    mode,
+    *,
+    reply=None,
+    calendar_request="handle the current calendar request",
+    clarification_question=None,
+):
+    return tool_response(
+        "plan_turn",
+        {
+            "mode": mode,
+            "calendar_request": (
+                calendar_request if mode.startswith("calendar_") else None
+            ),
+            "reply": reply if mode in {"conversation", "unsupported"} else None,
+            "clarification_question": clarification_question,
+        },
+        tool_id="plan-1",
     )
 
 
@@ -94,41 +116,40 @@ def config():
     )
 
 
-def runtime_with(responses):
+def runtime_with(responses, *, plan_mode="calendar_write", plan_reply=None):
     return BotRuntime(
         config=config(),
-        openai_client=SimpleNamespace(responses=FakeResponses(responses)),
+        openai_client=SimpleNamespace(
+            responses=FakeResponses(
+                [plan_response(plan_mode, reply=plan_reply), *responses]
+            )
+        ),
         calendar_client=FakeCalendar(),
-        tools=[],
+        tools=TOOLS,
     )
 
 
 class BotRuntimeTests(unittest.TestCase):
-    def test_acknowledgment_gets_no_tools_or_stale_calendar_history(self):
+    def test_acknowledgment_uses_context_but_runs_no_calendar_tools(self):
         runtime = BotRuntime(
             config=config(),
             openai_client=SimpleNamespace(
-                responses=FakeResponses([text_response("thanks boss. we're so back.")])
+                responses=FakeResponses(
+                    [plan_response("conversation", reply="thanks boss. we're so back.")]
+                )
             ),
             calendar_client=FakeCalendar(),
-            tools=[
-                {"name": "list_events"},
-                {"name": "create_event"},
-                {"name": "update_event"},
-                {"name": "delete_event"},
-            ],
+            tools=TOOLS,
         )
-        runtime.history[-100123].extend(
-            (
-                {"role": "user", "content": "add kaufman bbq august 22 at noon"},
-                {
-                    "role": "assistant",
-                    "content": (
-                        "done. kaufman bbq is on the calendar for saturday, "
-                        "august 22 from 12pm to 11pm."
-                    ),
-                },
-            )
+        runtime.state.record_turn(
+            chat_id=-100123,
+            user_id=101,
+            actor_name="Ezra",
+            user_text="add kaufman bbq august 22 at noon",
+            assistant_text=(
+                "done. kaufman bbq is on the calendar for saturday, "
+                "august 22 from 12pm to 11pm."
+            ),
         )
 
         reply = runtime.ask(
@@ -139,17 +160,24 @@ class BotRuntimeTests(unittest.TestCase):
 
         call = runtime.openai.responses.calls[0]
         self.assertEqual(reply, "thanks boss. we're so back.")
-        self.assertEqual(call["tools"], [])
-        self.assertEqual(
-            call["input"],
-            [{"role": "user", "content": "good stuff calbot. youre fixed"}],
+        self.assertEqual(call["tools"][0]["name"], "plan_turn")
+        self.assertIn(
+            "add kaufman bbq",
+            repr(call["input"]),
         )
         self.assertEqual(runtime.cal.calls, [])
 
-    def test_empty_or_pass_model_reply_gets_visible_fallback(self):
+    def test_invalid_planner_output_gets_visible_retry(self):
         for model_reply in ("", "PASS", " pass "):
             with self.subTest(model_reply=model_reply):
-                runtime = runtime_with([text_response(model_reply)])
+                runtime = BotRuntime(
+                    config=config(),
+                    openai_client=SimpleNamespace(
+                        responses=FakeResponses([text_response(model_reply)])
+                    ),
+                    calendar_client=FakeCalendar(),
+                    tools=TOOLS,
+                )
 
                 with self.assertLogs("assistant-bot", level="WARNING") as logs:
                     reply = runtime.ask(
@@ -158,9 +186,9 @@ class BotRuntimeTests(unittest.TestCase):
                         user_text="hello calbot",
                     )
 
-                self.assertEqual(reply, "got it.")
+                self.assertIn("couldn't understand", reply)
                 self.assertIn(
-                    "no visible reply",
+                    "planner returned an invalid",
                     "\n".join(logs.output).casefold(),
                 )
 
@@ -170,6 +198,10 @@ class BotRuntimeTests(unittest.TestCase):
             openai_client=SimpleNamespace(
                 responses=FakeResponses(
                     [
+                        plan_response(
+                            "calendar_read",
+                            calendar_request="check whether anything was changed",
+                        ),
                         tool_response(
                             "create_event",
                             {
@@ -177,12 +209,12 @@ class BotRuntimeTests(unittest.TestCase):
                                 "start": "2026-08-22T12:00:00-04:00",
                                 "end": "2026-08-22T23:00:00-04:00",
                             },
-                        )
+                        ),
                     ]
                 )
             ),
             calendar_client=FakeCalendar(),
-            tools=[{"name": "create_event"}],
+            tools=TOOLS,
         )
 
         with self.assertLogs("assistant-bot", level="WARNING") as logs:
@@ -192,13 +224,15 @@ class BotRuntimeTests(unittest.TestCase):
                 user_text="good stuff calbot. youre fixed",
             )
 
-        self.assertEqual(reply, "got it.")
+        self.assertEqual(reply, "i couldn't do that calendar action.")
         self.assertEqual(runtime.cal.calls, [])
         self.assertIn("tool denied", "\n".join(logs.output).casefold())
 
     def test_stale_calendar_state_claim_is_suppressed_on_acknowledgment(self):
         runtime = runtime_with(
-            [text_response("that's already on the calendar: kaufman bbq for saturday.")]
+            [],
+            plan_mode="conversation",
+            plan_reply="that's already on the calendar: kaufman bbq for saturday.",
         )
 
         with self.assertLogs("assistant-bot", level="WARNING") as logs:
@@ -214,6 +248,148 @@ class BotRuntimeTests(unittest.TestCase):
             "suppressed calendar-state claim",
             "\n".join(logs.output).casefold(),
         )
+
+    def test_general_knowledge_request_is_declined_without_calendar_tools(self):
+        runtime = runtime_with(
+            [],
+            plan_mode="unsupported",
+            plan_reply=(
+                "quantum computing is outside my lane. i'm here for our calendar "
+                "and the group chat."
+            ),
+        )
+
+        reply = runtime.ask(
+            chat_id=-100123,
+            user_id=101,
+            user_text="explain quantum computing",
+        )
+
+        self.assertIn("outside my lane", reply)
+        self.assertEqual(runtime.cal.calls, [])
+        self.assertEqual(len(runtime.openai.responses.calls), 1)
+
+    def test_ambiguous_calendar_write_asks_once_without_touching_calendar(self):
+        runtime = BotRuntime(
+            config=config(),
+            openai_client=SimpleNamespace(
+                responses=FakeResponses(
+                    [
+                        plan_response(
+                            "calendar_write",
+                            calendar_request="Move the intended event.",
+                            clarification_question="which event should i move?",
+                        )
+                    ]
+                )
+            ),
+            calendar_client=FakeCalendar(),
+            tools=TOOLS,
+        )
+
+        reply = runtime.ask(
+            chat_id=-100123,
+            user_id=101,
+            user_text="move it",
+        )
+
+        self.assertEqual(reply, "which event should i move?")
+        self.assertEqual(runtime.cal.calls, [])
+
+    def test_where_is_dinner_requires_a_real_calendar_read(self):
+        runtime = runtime_with(
+            [
+                tool_response(
+                    "list_events",
+                    {
+                        "time_min": "2026-08-21T00:00:00-04:00",
+                        "time_max": "2026-08-31T00:00:00-04:00",
+                    },
+                ),
+                text_response("dinner is at lilia on friday at 8pm."),
+            ],
+            plan_mode="calendar_read",
+        )
+
+        reply = runtime.ask(
+            chat_id=-100123,
+            user_id=101,
+            user_text="where is dinner?",
+        )
+
+        self.assertEqual(reply, "dinner is at lilia on friday at 8pm.")
+        self.assertEqual(runtime.cal.calls[0][0], "list_events")
+        self.assertEqual(runtime.openai.responses.calls[1]["tool_choice"], "required")
+
+    def test_status_question_receives_action_receipts_and_verifies_calendar(self):
+        runtime = runtime_with(
+            [
+                tool_response(
+                    "list_events",
+                    {
+                        "time_min": "2026-08-21T00:00:00-04:00",
+                        "time_max": "2026-09-01T00:00:00-04:00",
+                    },
+                ),
+                text_response("yes — dinner and brunch are both there."),
+            ],
+            plan_mode="calendar_status",
+        )
+        runtime.state.record_receipts(
+            chat_id=-100123,
+            user_id=101,
+            request_id="telegram:-100123:41",
+            receipts=(
+                {
+                    "action": "create_event",
+                    "status": "created",
+                    "event_id": "dinner-1",
+                    "title": "Dinner",
+                    "start": "2026-08-28T20:00:00-04:00",
+                    "end": "2026-08-28T22:00:00-04:00",
+                },
+            ),
+        )
+
+        reply = runtime.ask(
+            chat_id=-100123,
+            user_id=101,
+            user_text="did you add them to cal?",
+        )
+
+        self.assertIn("both there", reply)
+        self.assertEqual(runtime.cal.calls[0][0], "list_events")
+        self.assertIn(
+            "dinner-1",
+            runtime.openai.responses.calls[1]["instructions"],
+        )
+
+    def test_telegram_retry_returns_cached_reply_without_duplicate_work(self):
+        runtime = runtime_with(
+            [
+                tool_response(
+                    "create_event",
+                    {
+                        "title": "Dinner",
+                        "start": "2026-07-28T19:00:00-04:00",
+                        "end": "2026-07-28T21:00:00-04:00",
+                    },
+                )
+            ]
+        )
+        request = {
+            "chat_id": -100123,
+            "user_id": 101,
+            "user_text": "dinner tonight at 7",
+            "request_id": "telegram:-100123:42",
+        }
+
+        first = runtime.ask(**request)
+        second = runtime.ask(**request)
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(runtime.cal.calls), 1)
+        self.assertEqual(len(runtime.openai.responses.calls), 2)
 
     def test_create_executes_immediately_and_only_once(self):
         runtime = runtime_with(
@@ -246,6 +422,28 @@ class BotRuntimeTests(unittest.TestCase):
             runtime.cal.calls[0][1]["_idempotency_key"],
             "telegram:-100123:42:1",
         )
+
+    def test_backend_applies_stable_default_duration_when_end_is_omitted(self):
+        runtime = runtime_with(
+            [
+                tool_response(
+                    "create_event",
+                    {
+                        "title": "Dinner",
+                        "start": "2026-07-28T19:00:00-04:00",
+                    },
+                )
+            ]
+        )
+
+        reply = runtime.ask(
+            chat_id=-100123,
+            user_id=101,
+            user_text="dinner tonight at 7",
+        )
+
+        self.assertIn("from 7pm to 9pm", reply)
+        self.assertEqual(runtime.cal.calls[0][1]["end"], "2026-07-28T21:00:00-04:00")
 
     def test_batch_executes_each_action_immediately(self):
         runtime = runtime_with(

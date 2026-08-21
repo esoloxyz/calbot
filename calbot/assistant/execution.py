@@ -13,6 +13,7 @@ class ToolExecutionResult:
     output: str
     user_reply: str | None = None
     halt: bool = False
+    receipts: tuple[dict, ...] = ()
 
 
 def _tool_outcome(output: str) -> str:

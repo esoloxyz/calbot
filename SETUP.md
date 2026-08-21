@@ -20,6 +20,8 @@ Calbot connects one private Telegram chat to one shared Google Calendar.
    `ALLOWED_CHAT_ID`.
 6. Optionally set `ALLOWED_USER_IDS` to the two comma-separated Telegram user
    IDs for an additional restriction.
+7. Set `ACTOR_NAMES` to trusted ID/name pairs such as `101:Ezra,202:Sarah` so
+   Calbot can correctly interpret whose appointment a message refers to.
 
 ## 3. Configure Google Calendar access
 
@@ -34,24 +36,43 @@ Calbot connects one private Telegram chat to one shared Google Calendar.
 The service account does not need a project-level IAM role. Calendar sharing is
 what grants access.
 
+For native attendee invitations and Google Meet creation on a user-owned
+calendar, use Google OAuth instead. Configure `GOOGLE_OAUTH_CLIENT_ID`,
+`GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REFRESH_TOKEN`; when all three
+are present, Calbot prefers OAuth over the service account. The OAuth grant must
+include the Google Calendar events scope. Basic event reads and writes can keep
+using the simpler service-account setup.
+
 ## 4. Configure OpenAI
 
 Create an OpenAI API key and store it as `OPENAI_API_KEY`. Calbot defaults to
 `gpt-5.6-terra`; override `OPENAI_MODEL` only if needed.
 
-## 5. Configure Railway
+## 5. Add durable state
+
+Add a Railway Postgres service to the project. Expose its private connection
+string to the Calbot worker as `DATABASE_URL`. Calbot creates three narrowly
+scoped tables at startup for conversation turns, verified action receipts, and
+processed Telegram requests. Google Calendar remains the source of truth for
+events.
+
+## 6. Configure Railway
 
 Create or select a Railway service and add:
 
 - `TELEGRAM_BOT_TOKEN`
 - `ALLOWED_CHAT_ID`
 - `ALLOWED_USER_IDS` (optional)
+- `ACTOR_NAMES` (recommended)
 - `OPENAI_API_KEY`
 - `GOOGLE_SERVICE_ACCOUNT_JSON`
+- `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and
+  `GOOGLE_OAUTH_REFRESH_TOKEN` (optional OAuth replacement)
 - `CALENDAR_ID`
 - `TIMEZONE`
 - `BOT_OWNER`
 - `RESPOND_TO_ALL`
+- `DATABASE_URL`
 
 Deploy the repository and confirm the logs contain `Bot starting (polling)…`.
 Then test `/start`, `/today`, and a calendar change.
@@ -74,3 +95,9 @@ changing the calendar.
 
 Times use the configured `TIMEZONE`. The schedules are defined in
 `calbot/telegram_app.py`.
+
+## Verify semantic routing
+
+Run `python -m scripts.evaluate_planner` with `OPENAI_API_KEY` configured. The
+checked-in suite covers social conversation, research boundaries, terse event
+creation, reads, status questions, and contextual follow-up edits.

@@ -182,6 +182,9 @@ web, make payments, order food, manage wallets, or call any non-calendar service
             max_tool_rounds=self.max_tool_rounds,
             logger=log,
         )
+        if not (text or "").strip() or text.strip().casefold() == "pass":
+            log.warning("Assistant returned no visible reply; using fallback")
+            text = "got it."
         if access is CalendarToolAccess.NONE and claims_calendar_state(text):
             log.warning("Suppressed calendar-state claim on a non-calendar turn")
             text = "got it."

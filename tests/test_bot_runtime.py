@@ -146,6 +146,24 @@ class BotRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(runtime.cal.calls, [])
 
+    def test_empty_or_pass_model_reply_gets_visible_fallback(self):
+        for model_reply in ("", "PASS", " pass "):
+            with self.subTest(model_reply=model_reply):
+                runtime = runtime_with([text_response(model_reply)])
+
+                with self.assertLogs("assistant-bot", level="WARNING") as logs:
+                    reply = runtime.ask(
+                        chat_id=-100123,
+                        user_id=101,
+                        user_text="hello calbot",
+                    )
+
+                self.assertEqual(reply, "got it.")
+                self.assertIn(
+                    "no visible reply",
+                    "\n".join(logs.output).casefold(),
+                )
+
     def test_unoffered_mutation_is_denied_even_if_model_requests_it(self):
         runtime = BotRuntime(
             config=config(),
